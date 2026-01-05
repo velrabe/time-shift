@@ -1,0 +1,22 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# Audio files (large)
+audio/*.mp3
+audio/*.wav
+audio/*.ogg
+
+# Build
+dist/
+build/
+

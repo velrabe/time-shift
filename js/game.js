@@ -17,6 +17,9 @@ class Game {
         this.animationFrameId = null;
         this.lastUpdateTime = 0;
         
+        // Убеждаемся, что игра не запущена
+        this.state = 'MENU';
+        
         this.setupEventListeners();
     }
 
@@ -30,12 +33,12 @@ class Game {
         const localBestScore = this.storage.getLocalBestScore();
         this.bestScore = Math.max(gpBestScore, localBestScore);
         
-        // Загрузка снапшота (если есть)
-        const snapshot = this.loadSnapshot();
-        if (snapshot) {
-            // Предлагаем восстановить игру
-            this.restoreFromSnapshot(snapshot);
-        }
+        // Загрузка снапшота (если есть) - НЕ восстанавливаем автоматически
+        // Пользователь должен нажать PLAY для начала новой игры
+        // Снапшот можно использовать позже для функции "Continue"
+        
+        // Убеждаемся, что состояние - MENU (не запущено)
+        this.state = 'MENU';
         
         // Инициализация аудио
         this.audio.init();
@@ -48,7 +51,14 @@ class Game {
     setupEventListeners() {
         // События таймера
         eventBus.on('TICK_STEP', (data) => {
-            this.onTickStep(data);
+            // Обрабатываем только если игра запущена
+            if (this.state === 'RUNNING') {
+                // Передаем director в данные события для обновления ленты
+                if (data) {
+                    data.director = this.director;
+                }
+                this.onTickStep(data);
+            }
         });
 
         eventBus.on('SHIFT_USED', (data) => {
@@ -62,8 +72,13 @@ class Game {
 
         // События кнопок
         eventBus.on('BUTTON_CLICKED', (data) => {
-            this.onButtonClicked(data.delta);
+            if (data && typeof data.delta === 'number') {
+                this.onButtonClicked(data.delta);
+            }
         });
+        
+        // Делаем экземпляр игры доступным глобально для обработчиков
+        window.gameInstance = this;
 
         // События перков
         eventBus.on('PERK_ACTIVATED', (data) => {
@@ -117,6 +132,34 @@ class Game {
             continueBtn.addEventListener('click', () => this.continueAfterDeath());
         }
 
+        // Кнопка PLAY на стартовом экране
+        const playBtn = document.getElementById('play-btn');
+        if (playBtn) {
+            playBtn.addEventListener('click', () => this.start());
+        }
+
+        // Ползунок громкости
+        const volumeSlider = document.getElementById('volume-slider');
+        const volumeValue = document.getElementById('volume-value');
+        if (volumeSlider && volumeValue) {
+            // Загружаем сохраненное значение громкости
+            const savedVolume = this.storage.loadSettings()?.volume || 50;
+            volumeSlider.value = savedVolume;
+            volumeValue.textContent = `${savedVolume}%`;
+            this.audio.setVolume(savedVolume / 100);
+            
+            volumeSlider.addEventListener('input', (e) => {
+                const volume = parseInt(e.target.value);
+                volumeValue.textContent = `${volume}%`;
+                this.audio.setVolume(volume / 100);
+                
+                // Сохраняем настройку
+                const settings = this.storage.loadSettings() || {};
+                settings.volume = volume;
+                this.storage.saveSettings(settings);
+            });
+        }
+
         // Обработка видимости вкладки
         document.addEventListener('visibilitychange', () => {
             if (document.hidden) {
@@ -129,6 +172,9 @@ class Game {
 
     // Запуск игры
     async start() {
+        // Скрываем стартовый экран
+        this.renderer.hideStartScreen();
+        
         this.state = 'COUNTDOWN';
         this.timer.reset();
         this.director = new Director();
@@ -141,16 +187,36 @@ class Game {
         this.state = 'RUNNING';
         this.lastUpdateTime = performance.now();
         this.lastSnapshotTime = Date.now();
+        this.lastRenderedButtons = null;
+        this.lastPerksRender = 0;
+        this.userInteracted = true; // Помечаем как взаимодействовал (клик на PLAY)
         
         // Генерация начальных кнопок
         const gameState = this.getGameState();
+        this.director.currentButtons = []; // Принудительно сбрасываем
         this.director.ensureButtons(gameState);
         if (this.director.currentButtons.length > 0) {
             this.renderer.renderControlButtons(this.director.currentButtons);
+            this.lastRenderedButtons = JSON.stringify(this.director.currentButtons);
         }
         
-        // Запуск аудио
+        // Запуск аудио при старте таймера (после взаимодействия пользователя)
         this.audio.play();
+        
+        // Рендерим ленту для начального состояния (current = 0)
+        this.renderer.renderNumberStrip(this.timer, this.director);
+        
+        // Устанавливаем правильную начальную позицию ленты для current = 0
+        // И сразу запускаем анимацию для перехода к current = 1
+        requestAnimationFrame(() => {
+            // Устанавливаем начальную позицию для current = 0 мгновенно (без анимации)
+            this.renderer.updateStripPosition(this.timer.current, null);
+            
+            // Запускаем анимацию круга для начального состояния
+            const initialStepDuration = this.timer.calculateStepDuration();
+            this.renderer.animateFocusZone(initialStepDuration);
+            
+        });
         
         // Запуск игрового цикла
         this.gameLoop();
@@ -158,7 +224,13 @@ class Game {
 
     // Игровой цикл
     gameLoop() {
+        // Строгая проверка - только RUNNING запускает цикл
         if (this.state !== 'RUNNING') {
+            // Отменяем анимацию если она была запланирована
+            if (this.animationFrameId) {
+                cancelAnimationFrame(this.animationFrameId);
+                this.animationFrameId = null;
+            }
             return;
         }
 
@@ -190,11 +262,6 @@ class Game {
         // Рендеринг
         this.render();
         
-        // Убеждаемся, что кнопки отображены
-        if (this.director.currentButtons.length > 0) {
-            this.renderer.renderControlButtons(this.director.currentButtons);
-        }
-        
         // Сохранение снапшота
         const now = Date.now();
         if (now - this.lastSnapshotTime >= this.snapshotInterval) {
@@ -210,23 +277,34 @@ class Game {
     render() {
         const gameState = this.getGameState();
         
-        // Лента чисел
-        this.renderer.renderNumberStrip(this.timer, this.director.dangerWindows);
+        // Лента чисел (рендерим каждый кадр для плавности, передаем director для истории)
+        this.renderer.renderNumberStrip(this.timer, this.director);
         
-        // Кнопки (если нужно обновить)
+        // Кнопки (рендерим только при изменении)
         if (this.director.currentButtons.length === 0) {
             this.director.ensureButtons(gameState);
-            if (this.director.currentButtons.length > 0) {
-                this.renderer.renderControlButtons(this.director.currentButtons);
-            }
+        }
+        // Рендерим кнопки только если они изменились
+        if (this.director.currentButtons.length > 0 && this.shouldRenderButtons()) {
+            this.renderer.renderControlButtons(this.director.currentButtons);
+            this.lastRenderedButtons = JSON.stringify(this.director.currentButtons);
         }
         
-        // Перки
-        const availablePerks = this.perks.getAvailablePerks(gameState);
-        this.renderer.renderPerks(availablePerks);
+        // Перки (рендерим реже)
+        if (!this.lastPerksRender || Date.now() - this.lastPerksRender > 500) {
+            const availablePerks = this.perks.getAvailablePerks(gameState);
+            this.renderer.renderPerks(availablePerks);
+            this.lastPerksRender = Date.now();
+        }
         
         // UI
         this.updateUI();
+    }
+    
+    // Проверка необходимости рендера кнопок
+    shouldRenderButtons() {
+        const currentButtonsStr = JSON.stringify(this.director.currentButtons);
+        return !this.lastRenderedButtons || this.lastRenderedButtons !== currentButtonsStr;
     }
 
     // Обновление UI
@@ -257,7 +335,7 @@ class Game {
         if (passedWindows.length > 0) {
             this.perks.dangerPassedStreak++;
             eventBus.emit('DANGER_PASSED');
-            this.director.onDangerPassed();
+            this.director.onDangerPassed(this.timer.maxReached);
         }
     }
 
@@ -274,8 +352,21 @@ class Game {
 
     // Обработка клика по кнопке
     onButtonClicked(delta) {
-        if (this.state !== 'RUNNING') return;
-        
+        if (this.state !== 'RUNNING') {
+            return;
+        }
+
+        // Воспроизведение звуков эффектов
+        if (this.audio.isPlaying) {
+            if (delta < 0) {
+                // Отрицательная дельта - звук перемотки назад
+                this.audio.playBackSound();
+            } else if (delta > 0) {
+                // Положительная дельта - звук перемотки вперед
+                this.audio.playForwardSound();
+            }
+        }
+
         this.timer.shift(delta);
         
         // Проверка опасности после сдвига
@@ -314,6 +405,7 @@ class Game {
         if (this.state !== 'RUNNING') return;
         
         this.state = 'PAUSED';
+        // Паузим музыку
         this.audio.pause();
         
         if (this.animationFrameId) {
@@ -337,6 +429,7 @@ class Game {
         
         this.state = 'RUNNING';
         this.lastUpdateTime = performance.now();
+        // Возобновляем музыку
         this.audio.play();
         this.gameLoop();
         eventBus.emit('RESUME');
@@ -381,8 +474,16 @@ class Game {
         
         this.renderer.hideGameOverScreen();
         
-        // Восстановление на безопасное значение
-        const safeValue = Math.max(0, this.timer.current - 5);
+        // Восстановление на безопасное значение (до опасного окна)
+        // Находим последнее пройденное окно или используем отступ
+        let safeValue = Math.max(0, this.timer.current - 5);
+        
+        // Если есть пройденные окна, ставим после последнего
+        if (this.director.passedDangerWindows.length > 0) {
+            const lastWindow = this.director.passedDangerWindows[this.director.passedDangerWindows.length - 1];
+            safeValue = Math.max(0, lastWindow.start + lastWindow.length);
+        }
+        
         this.timer.current = safeValue;
         
         // Очистка опасных окон
@@ -394,6 +495,7 @@ class Game {
         
         this.state = 'RUNNING';
         this.lastUpdateTime = performance.now();
+        // Запускаем музыку
         this.audio.play();
         this.gameLoop();
     }
@@ -410,7 +512,8 @@ class Game {
         this.renderer.hideGameOverScreen();
         this.renderer.hidePauseScreen();
         
-        this.start();
+        // Показываем стартовый экран
+        this.renderer.showStartScreen();
     }
 
     // Сохранение снапшота
@@ -453,25 +556,18 @@ class Game {
             return;
         }
         
+        // Восстанавливаем данные, но НЕ запускаем игру
         this.timer.fromSnapshot(snapshot.timer);
         this.director.fromSnapshot(snapshot.director);
         this.perks.fromSnapshot(snapshot.perks);
-        
-        // Отображение кнопок при восстановлении
-        if (this.director.currentButtons.length > 0) {
-            this.renderer.renderControlButtons(this.director.currentButtons);
-        } else {
-            const gameState = this.getGameState();
-            this.director.ensureButtons(gameState);
-            if (this.director.currentButtons.length > 0) {
-                this.renderer.renderControlButtons(this.director.currentButtons);
-            }
-        }
         
         // Обновление best score из снапшота
         if (snapshot.timer && snapshot.timer.maxReached) {
             this.gamePush.updateBestScoreFromSnapshot(snapshot.timer.maxReached);
         }
+        
+        // НЕ запускаем игру автоматически - пользователь должен нажать PLAY
+        // НЕ отображаем кнопки - они появятся только после старта игры
     }
 }
 

@@ -5,8 +5,8 @@ async function init() {
     game = new Game();
     await game.init();
     
-    // Автоматический старт (можно изменить на кнопку)
-    game.start();
+    // Показываем стартовый экран (игра начнется по клику на PLAY)
+    game.renderer.showStartScreen();
 }
 
 // Инициализация при загрузке

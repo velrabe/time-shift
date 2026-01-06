@@ -51,18 +51,23 @@ class GamePushSystem {
 
     async waitForReady() {
         if (!this.gp || !this.gp.player) {
-            console.warn('GamePush player not available');
             this.ready = true; // Продолжаем без GamePush
             return;
         }
 
         try {
-            await this.gp.player.ready();
-            this.playerData = this.gp.player.data || {};
+            // Проверяем наличие метода ready
+            if (typeof this.gp.player.ready === 'function') {
+                await this.gp.player.ready();
+                this.playerData = this.gp.player.data || {};
+            } else {
+                // Если метода нет, просто получаем данные
+                this.playerData = this.gp.player.data || {};
+            }
             this.ready = true;
         } catch (e) {
-            console.warn('GamePush ready failed:', e);
-            this.ready = true; // Продолжаем без GamePush
+            // Продолжаем без GamePush
+            this.ready = true;
         }
     }
 

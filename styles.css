@@ -132,30 +132,32 @@ body {
     display: flex;
     align-items: center;
     will-change: transform;
-    transition: transform 0.1s linear;
+    /* Анимация управляется через JS для синхронизации с кругом */
 }
 
-.number {
-    font-size: 48px;
-    font-weight: bold;
-    padding: 0 30px;
-    white-space: nowrap;
-    transition: color 0.2s;
-    text-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+.number-circle {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    margin: 0 15px;
+    transition: all 0.2s;
+    flex-shrink: 0;
 }
 
-.number.normal {
-    color: #fff;
+.number-circle.normal {
+    background-color: #000;
+    border: 2px solid #000;
 }
 
-.number.danger {
-    color: #ff0000;
-    text-shadow: 0 0 20px rgba(255, 0, 0, 0.8);
+.number-circle.danger {
+    background-color: #ff0000;
+    border: 2px solid #ff0000;
 }
 
-.number.active {
-    transform: scale(1.2);
-    text-shadow: 0 0 30px rgba(255, 255, 255, 0.9);
+.number-circle.active {
+    width: 50px;
+    height: 50px;
+    box-shadow: 0 0 15px rgba(255, 255, 255, 0.5);
 }
 
 /* Focus Zone */
@@ -168,29 +170,35 @@ body {
     justify-content: center;
     z-index: 10;
     pointer-events: none;
+    transform-origin: center center;
+}
+
+.focus-circle-static {
+    position: absolute;
+    width: 150px; /* Максимальный размер анимации (остается прежним) */
+    height: 150px;
+    border: 4px solid rgba(255, 255, 255, 0.4);
+    border-radius: 50%;
+    box-shadow: 
+        0 0 20px rgba(255, 255, 255, 0.2),
+        inset 0 0 20px rgba(255, 255, 255, 0.05);
+    z-index: 9;
 }
 
 .focus-circle {
-    width: 180px;
-    height: 180px;
+    position: absolute;
+    width: 75px; /* Минимальный размер (уменьшен в 2 раза) */
+    height: 75px;
     border: 4px solid rgba(255, 255, 255, 0.6);
     border-radius: 50%;
     box-shadow: 
         0 0 20px rgba(255, 255, 255, 0.3),
         inset 0 0 20px rgba(255, 255, 255, 0.1);
-    animation: pulse 2s ease-in-out infinite;
+    transform-origin: center center;
+    will-change: transform;
+    z-index: 10;
 }
 
-@keyframes pulse {
-    0%, 100% {
-        transform: scale(1);
-        opacity: 0.6;
-    }
-    50% {
-        transform: scale(1.05);
-        opacity: 0.8;
-    }
-}
 
 /* Controls */
 #controls {
@@ -208,6 +216,23 @@ body {
     gap: 15px;
     flex-wrap: wrap;
     justify-content: center;
+    align-items: center;
+}
+
+.control-btn.inactive {
+    opacity: 0.3;
+    cursor: not-allowed;
+    pointer-events: none;
+}
+
+.control-btn:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+}
+
+.control-btn:disabled:hover {
+    transform: none;
+    background: rgba(255, 255, 255, 0.15);
 }
 
 .control-btn {
@@ -322,11 +347,104 @@ body {
     }
 }
 
+/* Start Screen */
+#start-screen {
+    background: rgba(0, 0, 0, 0.9);
+}
+
+#start-screen .overlay-content h2 {
+    font-size: 48px;
+    margin-bottom: 40px;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+
+.play-btn {
+    font-size: 24px;
+    padding: 15px 40px;
+    min-width: 200px;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    border: none;
+    margin-bottom: 30px;
+}
+
+.play-btn:hover {
+    transform: scale(1.05);
+    box-shadow: 0 0 30px rgba(102, 126, 234, 0.6);
+}
+
+#volume-control {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    margin-top: 20px;
+}
+
+#volume-control label {
+    font-size: 16px;
+    color: #fff;
+}
+
+#volume-slider {
+    flex: 1;
+    height: 6px;
+    background: rgba(255, 255, 255, 0.2);
+    border-radius: 3px;
+    outline: none;
+    -webkit-appearance: none;
+}
+
+#volume-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 18px;
+    height: 18px;
+    background: #667eea;
+    border-radius: 50%;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+#volume-slider::-webkit-slider-thumb:hover {
+    background: #764ba2;
+    transform: scale(1.2);
+}
+
+#volume-slider::-moz-range-thumb {
+    width: 18px;
+    height: 18px;
+    background: #667eea;
+    border-radius: 50%;
+    cursor: pointer;
+    border: none;
+    transition: all 0.2s;
+}
+
+#volume-slider::-moz-range-thumb:hover {
+    background: #764ba2;
+    transform: scale(1.2);
+}
+
+#volume-value {
+    font-size: 16px;
+    color: #fff;
+    min-width: 45px;
+    text-align: right;
+}
+
 /* Responsive */
 @media (max-width: 768px) {
-    .number {
-        font-size: 36px;
-        padding: 0 20px;
+    .number-circle {
+        width: 30px;
+        height: 30px;
+        margin: 0 10px;
+    }
+    
+    .number-circle.active {
+        width: 38px;
+        height: 38px;
     }
     
     .control-btn {
@@ -340,9 +458,14 @@ body {
         height: 150px;
     }
     
-    .focus-circle {
-        width: 130px;
+    .focus-circle-static {
+        width: 130px; /* Максимальный размер для мобильных */
         height: 130px;
+    }
+    
+    .focus-circle {
+        width: 65px; /* Минимальный размер (уменьшен в 2 раза) */
+        height: 65px;
     }
 }
 

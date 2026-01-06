@@ -2,10 +2,16 @@
 class Director {
     constructor() {
         this.dangerWindows = [];
+        this.passedDangerWindows = []; // История пройденных окон
         this.currentButtons = [];
-        this.nextThreatStep = 0;
         this.overrideRules = [];
         this.initialized = false;
+        
+        // ControlSet система
+        this.controlSet = null;
+        this.dangerPassedCount = 0; // Счетчик пройденных опасностей
+        this.controlSetMinTTL = 3; // Минимум 3 опасности набор не меняется
+        this.controlSetMaxTTL = 7; // Максимум 7 опасностей
     }
 
     // Обновление директора
@@ -14,7 +20,35 @@ class Director {
         
         // Инициализация при первом запуске
         if (!this.initialized) {
-            this.scheduleNextThreat(timer.maxReached);
+            // Инициализируем ControlSet
+            if (!this.controlSet) {
+                this.updateControlSet(timer.maxReached);
+            }
+            
+            // Генерируем начальный буфер угроз (на 100 шагов вперед)
+            const initialLookahead = 100;
+            let furthestThreat = timer.current;
+            let attempts = 0;
+            const maxAttempts = 20; // Защита от бесконечного цикла
+            
+            while (furthestThreat < timer.current + initialLookahead && attempts < maxAttempts) {
+                const shouldGenerate = this.shouldGenerateThreat(timer.current, timer.maxReached, furthestThreat);
+                if (shouldGenerate) {
+                    this.generateThreat(state);
+                    // Обновляем furthestThreat после генерации
+                    const newFurthest = this.dangerWindows.length > 0 
+                        ? Math.max(...this.dangerWindows.map(w => w.start + w.length - 1))
+                        : timer.current;
+                    if (newFurthest <= furthestThreat) {
+                        break;
+                    }
+                    furthestThreat = newFurthest;
+                } else {
+                    break;
+                }
+                attempts++;
+            }
+            
             this.initialized = true;
         }
         
@@ -29,16 +63,56 @@ class Director {
             return;
         }
 
-        // Удаление прошедших окон
+        // Перемещение прошедших окон в историю
+        const passedWindows = this.dangerWindows.filter(window => {
+            const end = window.start + window.length - 1;
+            return end < timer.current;
+        });
+        
+        // Добавляем пройденные окна в историю
+        passedWindows.forEach(window => {
+            if (!this.passedDangerWindows.some(w => w.start === window.start && w.length === window.length)) {
+                this.passedDangerWindows.push(window);
+            }
+        });
+        
+        // Удаляем прошедшие окна из активных
         this.dangerWindows = this.dangerWindows.filter(window => {
             const end = window.start + window.length - 1;
             return end >= timer.current;
         });
 
         // Генерация новых угроз
-        if (timer.current >= this.nextThreatStep) {
-            this.generateThreat(state);
-            this.scheduleNextThreat(timer.maxReached);
+        // Генерируем угрозы заранее, чтобы всегда был буфер впереди
+        const lookaheadDistance = 100; // Генерируем угрозы на 100 шагов вперед
+        let furthestThreat = this.dangerWindows.length > 0 
+            ? Math.max(...this.dangerWindows.map(w => w.start + w.length - 1))
+            : timer.current;
+        
+        // Генерируем угрозы пока не достигнем lookaheadDistance
+        // Защита от бесконечного цикла и от генерации слишком много угроз за раз
+        let attempts = 0;
+        const maxAttempts = 10; // Ограничиваем количество угроз за один update
+        
+        // Генерируем максимум до lookaheadDistance, но не более maxAttempts угроз за раз
+        while (furthestThreat < timer.current + lookaheadDistance && attempts < maxAttempts) {
+            const shouldGenerateThreat = this.shouldGenerateThreat(timer.current, timer.maxReached, furthestThreat);
+            if (shouldGenerateThreat) {
+                this.generateThreat(state);
+                // Обновляем furthestThreat после генерации
+                const newFurthest = this.dangerWindows.length > 0 
+                    ? Math.max(...this.dangerWindows.map(w => w.start + w.length - 1))
+                    : timer.current;
+                if (newFurthest <= furthestThreat) {
+                    // Не удалось сгенерировать угрозу дальше - выходим
+                    break;
+                }
+                furthestThreat = newFurthest;
+            } else {
+                // Не можем сгенерировать сейчас - выходим
+                break;
+            }
+            attempts++;
         }
 
         // Генерация кнопок
@@ -53,37 +127,245 @@ class Director {
             maxReached <= rule.range.to
         );
     }
+    
+    // Проверка, нужно ли создавать новую угрозу
+    shouldGenerateThreat(current, maxReached, furthestThreat) {
+        // Проверка 1: есть ли активные угрозы впереди
+        const minThreatLookaheadSteps = 3; // Минимум 3 шага до ближайшей угрозы
+        
+        // Находим ближайшую угрозу впереди (правильно - через минимум)
+        const threatsAhead = this.dangerWindows.filter(w => w.start > current);
+        if (threatsAhead.length > 0) {
+            // Находим ближайшую (минимальный start)
+            const nextThreat = threatsAhead.reduce((min, w) => !min || w.start < min.start ? w : min, null);
+            if (nextThreat) {
+                const distanceToNext = nextThreat.start - current;
+                // Если ближайшая угроза слишком близко, не создаем новую
+                if (distanceToNext < minThreatLookaheadSteps) {
+                    return false;
+                }
+            }
+        }
+        
+        // Проверка 2: не создаем угрозу слишком близко к текущей позиции
+        // Новая угроза должна начинаться минимум через gapSteps от furthestThreat
+        const gapSteps = this.calculateGapSteps(maxReached);
+        const minStart = furthestThreat + gapSteps;
+        
+        // Если минимальная позиция для новой угрозы слишком близко к current, не создаем
+        if (minStart <= current + minThreatLookaheadSteps) {
+            return false;
+        }
+        
+        return true;
+    }
 
     // Генерация угрозы
     generateThreat(state) {
         const { timer, streak } = state;
         
-        // Определяем длину окна в зависимости от прогресса
-        const windowLength = this.calculateWindowLength(timer.maxReached);
+        // Убеждаемся, что ControlSet существует
+        if (!this.controlSet) {
+            this.updateControlSet(timer.maxReached);
+        }
         
-        // Выбираем решение (безопасное действие)
-        const solutionDelta = this.chooseSolutionDelta(timer.maxReached);
+        // 1. Определяем длину окна в зависимости от прогресса
+        let windowLength = this.calculateWindowLength(timer.maxReached);
         
-        // Вычисляем позицию окна так, чтобы решение работало
-        const windowStart = timer.current + this.calculateSafeDistance(solutionDelta, timer.stepDurationSec);
+        // 2. Проверяем, нужно ли форсировать обновление ControlSet
+        if (this.shouldForceUpdateControlSet(windowLength, timer.maxReached)) {
+            this.updateControlSet(timer.maxReached);
+        }
         
-        // Создаем окно
+        // 3. Проверяем, может ли текущий ControlSet решить окно длины windowLength
+        // Если нет - ограничиваем длину окна до максимально решаемой
+        const minRequired = windowLength + 1;
+        const available = this.controlSet.availableDeltas.filter(d => d > 0);
+        const maxSolution = available.length > 0 ? Math.max(...available) : 2;
+        
+        // Если максимальная solution недостаточна для окна, ограничиваем длину окна
+        if (maxSolution < minRequired) {
+            const maxSolvableLength = Math.max(1, maxSolution - 1);
+            windowLength = maxSolvableLength;
+        }
+        
+        // 4. Выбираем решение из текущего ControlSet с учетом длины окна
+        // Используем самую дальнюю угрозу как базу, чтобы не создавать окна слишком близко
+        const furthestThreat = this.dangerWindows.length > 0 
+            ? Math.max(...this.dangerWindows.map(w => w.start + w.length - 1))
+            : timer.current;
+        const basePosition = Math.max(timer.current, furthestThreat);
+        
+        const solutionDelta = this.chooseSolutionFromControlSet(basePosition, windowLength);
+        
+        // 5. Вычисляем позицию окна так, чтобы solution гарантированно работала
+        const windowStart = this.calculateWindowStartForSolution(basePosition, solutionDelta, windowLength, timer.maxReached);
+        
+        // 6. Создаем окно
         const dangerWindow = {
             start: windowStart,
             length: windowLength,
             solutionDelta: solutionDelta
         };
         
+        // 7. Финальная проверка гарантии решения
+        this.validateSolution(dangerWindow, timer.current);
+        
+        // Логируем только финальный результат генерации
+        console.log('[GENERATE_THREAT]', {
+            current: timer.current,
+            maxReached: timer.maxReached,
+            window: {
+                start: dangerWindow.start,
+                end: dangerWindow.start + dangerWindow.length - 1,
+                length: dangerWindow.length,
+                solutionDelta: dangerWindow.solutionDelta
+            },
+            controlSet: this.controlSet.availableDeltas
+        });
+        
         this.dangerWindows.push(dangerWindow);
     }
+    
+    // Выбор solution из текущего ControlSet с учетом длины окна
+    chooseSolutionFromControlSet(current, windowLength) {
+        if (!this.controlSet || this.controlSet.availableDeltas.length === 0) {
+            // Fallback если ControlSet не готов
+            return Math.max(2, windowLength + 1);
+        }
+        
+        const availableDeltas = this.controlSet.availableDeltas;
+        
+        // Выбираем положительную дельту (solution обычно вперед)
+        const positiveDeltas = availableDeltas.filter(d => d > 0);
+        
+        if (positiveDeltas.length > 0) {
+            // Solution должна перепрыгнуть окно в худшем случае
+            // Минимальная requirement: solutionDelta >= windowLength + 1
+            const minRequired = windowLength + 1;
+            
+            // Ищем подходящую solution из доступных
+            const suitable = positiveDeltas.filter(d => d >= minRequired);
+            
+            if (suitable.length > 0) {
+                // Есть подходящая - берем минимальную из подходящих
+                return Math.min(...suitable);
+            } else {
+                // Нет подходящей - берем самую большую
+                // Но тогда окно будет размещено дальше, чтобы solution работала
+                return Math.max(...positiveDeltas);
+            }
+        }
+        
+        // Если нет положительных, берем первую доступную (но это не должно происходить)
+        return availableDeltas[0] || (windowLength + 1);
+    }
+    
+    // Вычисление позиции окна для гарантированной работы solution
+    calculateWindowStartForSolution(current, solutionDelta, windowLength, maxReached) {
+        // КРИТИЧНО: Худший случай - игрок находится на D-1 (прямо перед окном)
+        // В этом случае: current = D-1, и current + solutionDelta должно быть >= D + windowLength
+        // То есть: (D-1) + solutionDelta >= D + windowLength
+        // solutionDelta >= windowLength + 1
+        
+        // Вычисляем gapSteps в зависимости от прогресса
+        const gapSteps = this.calculateGapSteps(maxReached);
+        
+        // Начальная позиция окна: current + gapSteps
+        let windowStart = current + gapSteps;
+        
+        // Проверяем худший случай: игрок на windowStart - 1
+        const worstCaseCurrent = windowStart - 1;
+        const worstCaseNewPos = worstCaseCurrent + solutionDelta;
+        const windowEnd = windowStart + windowLength - 1;
+        
+        // Если в худшем случае solution попадает в окно, сдвигаем окно дальше
+        if (worstCaseNewPos >= windowStart && worstCaseNewPos <= windowEnd) {
+            // Нужно сдвинуть окно так, чтобы worstCaseNewPos был после окна
+            if (solutionDelta <= windowLength) {
+                // Сдвигаем окно так, чтобы solution гарантированно перепрыгнула
+                windowStart = current + solutionDelta + 1;
+            } else {
+                // solutionDelta достаточна, но нужно убедиться что окно не слишком близко
+                windowStart = Math.max(windowStart, worstCaseNewPos + 1);
+            }
+        }
+        
+        return windowStart;
+    }
+    
+    // Валидация solution - гарантия что она работает
+    validateSolution(dangerWindow, current) {
+        const solutionDelta = dangerWindow.solutionDelta;
+        let windowStart = dangerWindow.start;
+        const windowLength = dangerWindow.length;
+        const windowEnd = windowStart + windowLength - 1;
+        
+        // Проверяем худший случай: игрок на windowStart - 1
+        const worstCaseCurrent = windowStart - 1;
+        const worstCaseNewPos = worstCaseCurrent + solutionDelta;
+        
+        // Solution должна перепрыгнуть окно в худшем случае
+        // Нужно: worstCaseNewPos > windowEnd
+        if (worstCaseNewPos <= windowEnd) {
+            // Если solutionDelta недостаточна, сдвигаем окно дальше
+            // НЕ уменьшаем длину окна - это снижает сложность
+            if (solutionDelta <= windowLength) {
+                // solutionDelta недостаточна - сдвигаем окно так, чтобы она работала
+                windowStart = worstCaseCurrent + solutionDelta + 1;
+                dangerWindow.start = windowStart;
+            } else {
+                // solutionDelta достаточна, но окно размещено неправильно
+                windowStart = worstCaseNewPos + 1;
+                dangerWindow.start = windowStart;
+            }
+        }
+        
+        // Дополнительная проверка для текущей позиции
+        const currentNewPos = current + solutionDelta;
+        const finalWindowStart = dangerWindow.start;
+        const finalWindowEnd = finalWindowStart + windowLength - 1;
+        
+        if (currentNewPos >= finalWindowStart && currentNewPos <= finalWindowEnd) {
+            // Даже для текущей позиции не работает - сдвигаем окно дальше
+            dangerWindow.start = currentNewPos + 1;
+        }
+        
+        // Финальная проверка худшего случая после всех корректировок
+        const finalWorstCaseCurrent = dangerWindow.start - 1;
+        const finalWorstCaseNewPos = finalWorstCaseCurrent + solutionDelta;
+        const finalWindowEnd2 = dangerWindow.start + windowLength - 1;
+        
+        if (finalWorstCaseNewPos <= finalWindowEnd2) {
+            // Последняя попытка: сдвигаем окно дальше
+            dangerWindow.start = finalWorstCaseCurrent + solutionDelta + 1;
+        }
+    }
 
-    // Вычисление длины окна
+    // Вычисление длины окна по эталону
     calculateWindowLength(progress) {
-        if (progress < 10) return 1;
-        if (progress < 30) return 2;
-        if (progress < 60) return 3;
-        if (progress < 100) return 4;
-        return 5;
+        // maxReached < 15 → L=1 (всегда)
+        if (progress < 15) {
+            return 1;
+        }
+        
+        // 15–99 → L=1 (60%) / L=2 (40%) - двойные начинаются раньше
+        if (progress < 100) {
+            return Math.random() < 0.4 ? 2 : 1;
+        }
+        
+        // Эталон: 100–199 → L=2 (70%) / L=3 (30%)
+        if (progress < 200) {
+            return Math.random() < 0.3 ? 3 : 2;
+        }
+        
+        // Эталон: 200+ → L=2–4 (по распределению)
+        // Но нужно учитывать, что для L=4 нужен solutionDelta >= 5
+        // Распределение: L=2 (40%), L=3 (40%), L=4 (20%)
+        const rand = Math.random();
+        if (rand < 0.4) return 2;
+        if (rand < 0.8) return 3;
+        return 4;
     }
 
     // Выбор безопасного решения
@@ -102,27 +384,199 @@ class Director {
         return options[Math.floor(Math.random() * options.length)];
     }
 
-    // Вычисление безопасного расстояния до окна
+    // Фильтрация нейтральных дельт (не приводят к попаданию в окно)
+    filterNeutralDeltas(deltas, current, window) {
+        const windowStart = window.start;
+        const windowEnd = window.start + window.length - 1;
+        
+        return deltas.filter(delta => {
+            const newPos = current + delta;
+            // Безопасно если до окна или после окна
+            return newPos < windowStart || newPos > windowEnd;
+        });
+    }
+    
+    // Вычисление безопасного расстояния до окна (deprecated, используется calculateWindowStartForSolution)
     calculateSafeDistance(solutionDelta, stepDuration) {
-        // Нужно дать игроку время нажать кнопку до того, как окно достигнет центра
-        // Учитываем задержку реакции (примерно 1-2 шага)
         const reactionSteps = 2;
         return Math.max(solutionDelta + reactionSteps, 3);
     }
 
-    // Планирование следующей угрозы
-    scheduleNextThreat(progress) {
-        let interval;
-        
+    // Вычисление gapSteps (расстояние до следующей угрозы) в зависимости от прогресса
+    calculateGapSteps(progress) {
+        // early: 6–12 (включительно)
         if (progress < 20) {
-            interval = 6 + Math.random() * 6; // 6-12 шагов
-        } else if (progress < 50) {
-            interval = 4 + Math.random() * 5; // 4-9 шагов
-        } else {
-            interval = 3 + Math.random() * 4; // 3-7 шагов
+            return Math.floor(6 + Math.random() * 7); // 6-12 шагов (целое число)
+        }
+        // mid: 4–9 (включительно)
+        if (progress < 50) {
+            return Math.floor(4 + Math.random() * 6); // 4-9 шагов (целое число)
+        }
+        // late: 3–7 (включительно)
+        return Math.floor(3 + Math.random() * 5); // 3-7 шагов (целое число)
+    }
+
+    
+    // Получение стадии ControlSet на основе maxReached (прогресса)
+    getControlSetStage(maxReached) {
+        // Эталон: стадии должны быть привязаны к maxReached
+        // DangerPassed 0–9: [-1, +2] → maxReached < 30
+        // 10–24: [-1, +2, +3] → maxReached 30-49
+        // 25–49: [-1, +3, -2] → maxReached 50-99
+        // 50–99: [-1, +3, +4] → maxReached 100-199
+        // 100+: [-1, +4, -2] или [-1, +3, +4] → maxReached 200+
+        
+        if (maxReached < 30) return 0;
+        if (maxReached < 50) return 1;
+        if (maxReached < 100) return 2;
+        if (maxReached < 200) return 3;
+        return 4; // 200+
+    }
+    
+    // Получение ControlSet для стадии (по эталону)
+    getControlSetForStage(stage) {
+        switch (stage) {
+            case 0: return [-1, 2]; // [-1, +2] - maxReached < 30
+            case 1: return [-1, 2, 3]; // [-1, +2, +3] - maxReached 30-49
+            case 2: return [-1, 3, -2]; // [-1, +3, -2] - maxReached 50-99
+            case 3: return [-1, 3, 4]; // [-1, +3, +4] - maxReached 100-199
+            default: return [-1, 5, -2]; // [-1, +5, -2] - maxReached 200+ (для поддержки L=4 нужен +5)
+        }
+    }
+    
+    // Сравнение массивов
+    arraysEqual(a, b) {
+        if (a.length !== b.length) return false;
+        return a.every((val, i) => val === b[i]);
+    }
+    
+    // Плавная эволюция ControlSet (меняем только одну кнопку)
+    evolveControlSet(currentSet, targetDeltas, targetStage) {
+        const current = currentSet.availableDeltas;
+        const target = targetDeltas;
+        
+        // Если текущий набор уже соответствует цели, возвращаем его
+        if (this.arraysEqual(current.sort(), target.sort())) {
+            return {
+                ...currentSet,
+                createdAtDangerCount: this.dangerPassedCount,
+                stage: targetStage
+            };
         }
         
-        this.nextThreatStep = progress + interval;
+        // Находим разницу
+        const toAdd = target.filter(d => !current.includes(d));
+        const toRemove = current.filter(d => !target.includes(d));
+        
+        let newDeltas = [...current];
+        
+        // Если есть что добавить и что убрать - заменяем одну кнопку
+        if (toAdd.length > 0 && toRemove.length > 0) {
+            const removeIndex = current.indexOf(toRemove[0]);
+            newDeltas[removeIndex] = toAdd[0];
+        } else if (toAdd.length > 0) {
+            // Добавляем одну кнопку
+            newDeltas.push(toAdd[0]);
+        } else if (toRemove.length > 0) {
+            // Убираем одну кнопку
+            newDeltas = newDeltas.filter(d => d !== toRemove[0]);
+        }
+        
+        return {
+            availableDeltas: newDeltas,
+            createdAtDangerCount: this.dangerPassedCount,
+            stage: targetStage
+        };
+    }
+    
+    // Проверка необходимости обновления ControlSet
+    shouldUpdateControlSet(maxReached) {
+        if (!this.controlSet) return true;
+        
+        // Проверяем, изменилась ли стадия на основе maxReached
+        const currentStage = this.getControlSetStage(maxReached);
+        const controlSetStage = this.controlSet.stage || 0;
+        
+        if (currentStage > controlSetStage) {
+            // Стадия выросла - нужно обновить
+            return true;
+        }
+        
+        const ttl = this.controlSetMaxTTL;
+        const minTTL = this.controlSetMinTTL;
+        
+        // Обновляем если прошло достаточно опасностей
+        const dangerSinceCreation = this.dangerPassedCount - this.controlSet.createdAtDangerCount;
+        
+        // Минимум minTTL, максимум ttl
+        if (dangerSinceCreation < minTTL) return false;
+        if (dangerSinceCreation >= ttl) return true;
+        
+        // Случайное обновление между minTTL и ttl для разнообразия
+        return Math.random() > 0.7;
+    }
+    
+    // Обновление ControlSet (плавное изменение)
+    updateControlSet(maxReached) {
+        const stage = this.getControlSetStage(maxReached);
+        const newDeltas = this.getControlSetForStage(stage);
+        
+        if (!this.controlSet) {
+            // Первое создание
+            this.controlSet = {
+                availableDeltas: newDeltas,
+                createdAtDangerCount: this.dangerPassedCount,
+                createdAtMaxReached: maxReached,
+                stage: stage
+            };
+        } else {
+            // Плавное изменение - меняем только одну кнопку
+            this.controlSet = this.evolveControlSet(this.controlSet, newDeltas, stage);
+            this.controlSet.createdAtMaxReached = maxReached;
+        }
+    }
+    
+    // Проверка, нужно ли форсировать обновление ControlSet из-за недостаточной solution
+    shouldForceUpdateControlSet(windowLength, maxReached) {
+        if (!this.controlSet) return true;
+        
+        // Проверяем, есть ли в ControlSet решение для окна длины windowLength
+        // Нужно: solutionDelta >= windowLength + 1
+        const minRequired = windowLength + 1;
+        const available = this.controlSet.availableDeltas.filter(d => d > 0);
+        
+        if (available.length === 0) return true;
+        
+        const suitable = available.filter(d => d >= minRequired);
+        
+        // Если нет подходящей solution, нужно обновить ControlSet
+        if (suitable.length === 0) {
+            // Проверяем, не слишком ли рано обновлять (защита от частых обновлений)
+            const stage = this.getControlSetStage(maxReached);
+            const currentStage = this.controlSet.stage || 0;
+            
+            // Если стадия изменилась, можно обновить
+            if (stage > currentStage) {
+                return true;
+            }
+            
+            // Если стадия та же, но прошло достаточно времени
+            const dangerSinceCreation = this.dangerPassedCount - this.controlSet.createdAtDangerCount;
+            if (dangerSinceCreation >= this.controlSetMinTTL) {
+                return true;
+            }
+        }
+        
+        return false;
+    }
+    
+    // Получение максимально допустимой дельты для прогресса
+    maxDeltaAllowed(progress) {
+        if (progress < 10) return 2;
+        if (progress < 30) return 3;
+        if (progress < 60) return 4;
+        if (progress < 100) return 5;
+        return 6;
     }
 
     // Обеспечение наличия кнопок
@@ -134,102 +588,191 @@ class Director {
         this.currentButtons = buttons;
         if (buttons.length > 0) {
             eventBus.emit('BUTTONS_UPDATED', { buttons });
+        } else {
+            // Принудительно создаем кнопки
+            this.currentButtons = [
+                { delta: 1, type: 'neutral', label: '+1' },
+                { delta: 2, type: 'neutral', label: '+2' },
+                { delta: -1, type: 'neutral', label: '-1' }
+            ];
+            eventBus.emit('BUTTONS_UPDATED', { buttons: this.currentButtons });
         }
     }
 
-    // Генерация кнопок
+    // Получение фиксированного набора всех возможных кнопок
+    getAllPossibleButtons() {
+        // Фиксированный набор всех возможных кнопок в фиксированном порядке
+        // Отрицательные слева, положительные справа, отсортированы по модулю
+        return [-1, 2, 3, 4, 5, 6];
+    }
+
+    // Генерация кнопок из текущего ControlSet
     generateButtons(state) {
         const { timer } = state;
-        const buttons = [];
         
-        // Находим ближайшее опасное окно
-        const nextWindow = this.dangerWindows.find(w => w.start > timer.current);
-        
-        if (nextWindow) {
-            // Solution button
-            buttons.push({
-                delta: nextWindow.solutionDelta,
-                type: 'solution',
-                label: `+${nextWindow.solutionDelta}`
-            });
-            
-            // Нейтральные кнопки
-            const neutralCount = 1 + Math.floor(Math.random() * 2);
-            const usedDeltas = new Set([nextWindow.solutionDelta]);
-            for (let i = 0; i < neutralCount; i++) {
-                let delta = this.generateNeutralDelta(timer.current, nextWindow);
-                let attempts = 0;
-                while (usedDeltas.has(delta) && attempts < 10) {
-                    delta = this.generateNeutralDelta(timer.current, nextWindow);
-                    attempts++;
-                }
-                usedDeltas.add(delta);
-                buttons.push({
-                    delta: delta,
-                    type: 'neutral',
-                    label: delta > 0 ? `+${delta}` : `${delta}`
-                });
+        // Убеждаемся, что ControlSet существует
+        if (!this.controlSet) {
+            if (typeof this.updateControlSet === 'function') {
+                // КРИТИЧНО: передаем maxReached
+                this.updateControlSet(timer.maxReached);
+            } else {
+                // Fallback если метод еще не определен
+                this.controlSet = {
+                    availableDeltas: [-1, 2],
+                    createdAtDangerCount: 0,
+                    createdAtMaxReached: timer.maxReached,
+                    stage: 0
+                };
             }
+        }
+        
+        if (!this.controlSet || !this.controlSet.availableDeltas) {
+            // Еще один fallback
+            this.controlSet = {
+                availableDeltas: [-1, 2],
+                createdAtDangerCount: 0,
+                createdAtMaxReached: timer.maxReached,
+                stage: 0
+            };
+        }
+        
+        const availableDeltas = this.controlSet.availableDeltas;
+        
+        // Ближайшее активное/наступающее окно (end >= current), с минимальным start
+        const nextWindow = this.dangerWindows
+            .filter(w => (w.start + w.length - 1) >= timer.current)
+            .reduce((min, w) => (!min || w.start < min.start ? w : min), null);
+        
+        // Доп. защита: логируем если окна есть, но nextWindow не найден
+        if (!nextWindow && this.dangerWindows.length > 0) {
+            console.warn('[DIRECTOR] dangerWindows exist but nextWindow not found', {
+                current: timer.current,
+                windows: this.dangerWindows.map(w => ({
+                    start: w.start,
+                    end: w.start + w.length - 1,
+                    len: w.length,
+                    sol: w.solutionDelta
+                }))
+            });
+        }
+        
+        // Определяем активные кнопки
+        const activeDeltas = new Set();
+        if (nextWindow) {
+            // Solution button из окна
+            activeDeltas.add(nextWindow.solutionDelta);
+            
+            // Остальные кнопки из ControlSet
+            const otherDeltas = availableDeltas.filter(d => d !== nextWindow.solutionDelta);
+            
+            // Нейтральные кнопки (не приводят к попаданию в окно)
+            const neutralDeltas = this.filterNeutralDeltas(otherDeltas, timer.current, nextWindow);
+            neutralDeltas.forEach(d => activeDeltas.add(d));
             
             // Ловушки (опционально, в зависимости от прогресса)
             if (timer.maxReached > 20 && Math.random() > 0.5) {
-                const trapDelta = this.generateTrapDelta(timer.current, nextWindow);
-                if (!usedDeltas.has(trapDelta)) {
-                    buttons.push({
-                        delta: trapDelta,
-                        type: 'trap',
-                        label: trapDelta > 0 ? `+${trapDelta}` : `${trapDelta}`
-                    });
+                const trapDeltas = otherDeltas.filter(d => !neutralDeltas.includes(d));
+                if (trapDeltas.length > 0) {
+                    activeDeltas.add(trapDeltas[0]);
                 }
             }
         } else {
-            // Нет активных окон - генерируем случайные кнопки
-            const count = 2 + Math.floor(Math.random() * 2);
-            const usedDeltas = new Set();
-            for (let i = 0; i < count; i++) {
-                let delta = (Math.random() > 0.5 ? 1 : -1) * (1 + Math.floor(Math.random() * 5));
-                let attempts = 0;
-                while ((usedDeltas.has(delta) || delta === 0) && attempts < 10) {
-                    delta = (Math.random() > 0.5 ? 1 : -1) * (1 + Math.floor(Math.random() * 5));
-                    attempts++;
+            // Нет активных окон - все кнопки из ControlSet активны
+            availableDeltas.forEach(d => activeDeltas.add(d));
+        }
+        
+        // Гарантируем минимум 2 активные кнопки
+        if (activeDeltas.size < 2) {
+            const missing = availableDeltas.filter(d => !activeDeltas.has(d));
+            missing.slice(0, 2 - activeDeltas.size).forEach(d => activeDeltas.add(d));
+        }
+        
+        // Создаем фиксированный набор всех возможных кнопок
+        const allPossibleButtons = this.getAllPossibleButtons();
+        const buttons = allPossibleButtons.map(delta => {
+            const isActive = activeDeltas.has(delta);
+            let type = 'neutral';
+            
+            // Определяем тип только для активных кнопок
+            if (isActive) {
+                if (nextWindow && delta === nextWindow.solutionDelta) {
+                    type = 'solution';
+                } else if (nextWindow && availableDeltas.includes(delta)) {
+                    // Проверяем, является ли это ловушкой
+                    const windowStart = nextWindow.start;
+                    const windowEnd = nextWindow.start + nextWindow.length - 1;
+                    const newPos = timer.current + delta;
+                    if (newPos >= windowStart && newPos <= windowEnd) {
+                        type = 'trap';
+                    } else {
+                        type = 'neutral';
+                    }
+                } else {
+                    type = 'neutral';
                 }
-                usedDeltas.add(delta);
-                buttons.push({
-                    delta: delta,
-                    type: 'neutral',
-                    label: delta > 0 ? `+${delta}` : `${delta}`
-                });
+            }
+            
+            return {
+                delta: delta,
+                type: type,
+                label: delta > 0 ? `+${delta}` : `${delta}`,
+                active: isActive
+            };
+        });
+        
+        // Логируем только финальный результат генерации кнопок
+        console.log('[GENERATE_BUTTONS]', {
+            current: timer.current,
+            nextWindow: nextWindow ? {
+                start: nextWindow.start,
+                end: nextWindow.start + nextWindow.length - 1,
+                length: nextWindow.length,
+                solutionDelta: nextWindow.solutionDelta
+            } : null,
+            activeButtons: buttons.filter(b => b.active).map(b => ({ delta: b.delta, type: b.type })),
+            controlSet: availableDeltas
+        });
+        
+        return buttons;
+    }
+
+    // Вычисление безопасной дельты для решения
+    calculateSafeDelta(current, window) {
+        // Ищем дельту, которая пропустит окно
+        const windowStart = window.start;
+        const windowEnd = window.start + window.length - 1;
+        
+        // Пробуем дельты от 1 до 10
+        for (let delta = 1; delta <= 10; delta++) {
+            const newPos = current + delta;
+            if (newPos > windowEnd) {
+                return delta;
             }
         }
         
-        // Минимум 2 кнопки
-        if (buttons.length < 2) {
-            const baseDelta = buttons.length > 0 ? Math.abs(buttons[0].delta) : 1;
-            buttons.push({
-                delta: baseDelta + 1,
-                type: 'neutral',
-                label: `+${baseDelta + 1}`
-            });
-        }
-        
-        // Перемешиваем для разнообразия
-        return this.shuffle(buttons);
+        // Если не нашли, возвращаем дельту больше окна
+        return Math.max(windowEnd - current + 1, 1);
     }
-
+    
     // Генерация нейтральной дельты
     generateNeutralDelta(current, window) {
         // Кнопка, которая не приведет к попаданию в окно
         const safeOptions = [];
-        for (let d = -5; d <= 5; d++) {
-            if (d === 0 || d === window.solutionDelta) continue;
+        const windowStart = window.start;
+        const windowEnd = window.start + window.length - 1;
+        
+        for (let d = -5; d <= 10; d++) {
+            if (d === 0) continue;
             const newPos = current + d;
-            if (newPos < window.start || newPos >= window.start + window.length) {
+            // Безопасно если до окна или после окна
+            if (newPos < windowStart || newPos > windowEnd) {
                 safeOptions.push(d);
             }
         }
         
         if (safeOptions.length === 0) {
-            return window.solutionDelta === 1 ? 2 : 1;
+            // Если нет безопасных вариантов, возвращаем дельту после окна
+            return Math.max(windowEnd - current + 1, 1);
         }
         
         return safeOptions[Math.floor(Math.random() * safeOptions.length)];
@@ -275,15 +818,22 @@ class Director {
     }
 
     // Очистка прошедших окон и обновление кнопок
-    onDangerPassed() {
-        // Удаляем прошедшие окна
-        this.dangerWindows = this.dangerWindows.filter(window => {
-            const end = window.start + window.length - 1;
-            return end >= 0; // оставляем только будущие
-        });
+    onDangerPassed(maxReached) {
+        // Прошедшие окна уже перемещены в историю в update()
+        this.dangerPassedCount++;
         
-        // Сбрасываем кнопки для регенерации
+        // Проверяем, нужно ли обновить ControlSet
+        if (this.shouldUpdateControlSet(maxReached)) {
+            this.updateControlSet(maxReached);
+        }
+        
+        // Сбрасываем кнопки для регенерации (но они будут из текущего ControlSet)
         this.currentButtons = [];
+    }
+    
+    // Получение всех опасных окон (активных + пройденных)
+    getAllDangerWindows() {
+        return [...this.dangerWindows, ...this.passedDangerWindows];
     }
 
     // Добавление оверрайда
@@ -300,20 +850,24 @@ class Director {
     toSnapshot() {
         return {
             dangerWindows: this.dangerWindows,
+            passedDangerWindows: this.passedDangerWindows,
             currentButtons: this.currentButtons,
-            nextThreatStep: this.nextThreatStep,
             overrideRules: this.overrideRules,
-            initialized: this.initialized
+            initialized: this.initialized,
+            controlSet: this.controlSet,
+            dangerPassedCount: this.dangerPassedCount
         };
     }
 
     // Восстановление из снапшота
     fromSnapshot(snapshot) {
         this.dangerWindows = snapshot.dangerWindows || [];
+        this.passedDangerWindows = snapshot.passedDangerWindows || [];
         this.currentButtons = snapshot.currentButtons || [];
-        this.nextThreatStep = snapshot.nextThreatStep || 0;
         this.overrideRules = snapshot.overrideRules || [];
         this.initialized = snapshot.initialized !== undefined ? snapshot.initialized : true;
+        this.controlSet = snapshot.controlSet || null;
+        this.dangerPassedCount = snapshot.dangerPassedCount || 0;
     }
 }
 

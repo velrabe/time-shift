@@ -1,32 +1,60 @@
 // Audio система с динамическим playbackRate
 class AudioSystem {
     constructor() {
-        this.audioContext = null;
         this.currentTrack = null;
         this.audioElement = null;
         this.tracks = [];
         this.isPlaying = false;
         this.basePlaybackRate = 1.0;
+        this.volume = 0.5; // Громкость по умолчанию (50%)
+        
+        // Эффекты перемотки
+        this.forwardEffect = null;
+        this.backEffect = null;
+        this.isPlayingEffect = false;
+        this.mainTrackTime = 0; // Сохраняем позицию основного трека
     }
 
     // Инициализация
     init() {
-        try {
-            this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
-        } catch (e) {
-            console.warn('WebAudio API not supported, using HTML5 audio');
-        }
-
-        // Создаем audio элемент
+        // Создаем audio элемент для основного трека
         this.audioElement = document.createElement('audio');
         this.audioElement.loop = true;
         this.audioElement.preload = 'auto';
+        this.audioElement.crossOrigin = 'anonymous';
+        this.audioElement.volume = this.volume;
+        
+        // Создаем элементы для эффектов
+        this.forwardEffect = document.createElement('audio');
+        this.forwardEffect.preload = 'auto';
+        this.forwardEffect.volume = this.volume * 0.3; // 30% от текущей громкости
+        
+        this.backEffect = document.createElement('audio');
+        this.backEffect.preload = 'auto';
+        this.backEffect.volume = this.volume * 0.3; // 30% от текущей громкости
+        
+        // Загружаем эффекты
+        const forwardUrl = new URL('audio/forward.wav', window.location.href);
+        const backUrl = new URL('audio/back.wav', window.location.href);
+        this.forwardEffect.src = forwardUrl.href;
+        this.backEffect.src = backUrl.href;
+        
+        // Обработчики окончания эффектов не нужны - звуки могут накладываться
+        
+        // Обработчик ошибок загрузки
+        this.audioElement.addEventListener('error', (e) => {
+            console.error('Audio load error:', e, 'src:', this.audioElement.src);
+        });
+        
+        this.audioElement.addEventListener('canplaythrough', () => {
+            console.log('Audio file loaded and ready');
+        });
         
         // Добавляем треки (можно расширить)
         this.tracks = [
             {
                 id: 'main',
-                url: 'audio/main.mp3', // нужно будет добавить файл
+                url: 'audio/1.mp3',
                 bpm: 120
             }
         ];
@@ -42,28 +70,59 @@ class AudioSystem {
         if (!track || !this.audioElement) return;
         
         this.currentTrack = track;
-        this.audioElement.src = track.url;
+        // Используем абсолютный путь относительно текущей страницы
+        const url = new URL(track.url, window.location.href);
+        this.audioElement.src = url.href;
+        console.log('Setting audio track:', url.href);
+        
+        // Загружаем трек
+        this.audioElement.load();
     }
 
     // Воспроизведение
     play() {
-        if (!this.audioElement) return;
-        
-        // Проверка наличия источника
-        if (!this.audioElement.src || this.audioElement.src === window.location.href) {
-            console.warn('Audio file not found, skipping playback');
+        if (!this.audioElement) {
+            console.warn('Audio element not initialized');
             return;
         }
         
-        this.audioElement.play().catch(e => {
-            console.warn('Audio play failed:', e);
-        });
-        this.isPlaying = true;
+        // Проверка наличия источника
+        if (!this.audioElement.src || this.audioElement.src === window.location.href) {
+            console.warn('Audio file not found, src:', this.audioElement.src);
+            return;
+        }
+        
+        // Проверяем готовность
+        if (this.audioElement.readyState < 2) {
+            console.log('Audio not ready yet, waiting...');
+            this.audioElement.addEventListener('canplay', () => {
+                this.audioElement.play().catch(e => {
+                    console.error('Audio play failed after load:', e);
+                });
+            }, { once: true });
+            return;
+        }
+        
+        const playPromise = this.audioElement.play();
+        if (playPromise !== undefined) {
+            playPromise.then(() => {
+                console.log('Audio playing successfully');
+                this.isPlaying = true;
+            }).catch(e => {
+                console.error('Audio play failed:', e);
+                // Это нормально, если пользователь еще не взаимодействовал
+            });
+        }
     }
 
     // Пауза
     pause() {
         if (!this.audioElement) return;
+        
+        // Останавливаем все эффекты
+        if (this.forwardEffect) this.forwardEffect.pause();
+        if (this.backEffect) this.backEffect.pause();
+        
         this.audioElement.pause();
         this.isPlaying = false;
     }
@@ -86,6 +145,28 @@ class AudioSystem {
         return this.audioElement ? this.audioElement.playbackRate : 1.0;
     }
 
+    // Воспроизведение звука перемотки назад (без перемотки трека)
+    playBackSound() {
+        if (!this.backEffect) return;
+        
+        // Воспроизводим эффект обратной перемотки (с наложением, если предыдущий еще играет)
+        this.backEffect.currentTime = 0;
+        this.backEffect.play().catch(e => {
+            console.error('Failed to play back effect:', e);
+        });
+    }
+
+    // Воспроизведение звука перемотки вперед (без перемотки трека)
+    playForwardSound() {
+        if (!this.forwardEffect) return;
+        
+        // Воспроизводим эффект перемотки вперед (с наложением, если предыдущий еще играет)
+        this.forwardEffect.currentTime = 0;
+        this.forwardEffect.play().catch(e => {
+            console.error('Failed to play forward effect:', e);
+        });
+    }
+
     // Обработка событий
     onEvent(event, data) {
         switch (event) {
@@ -106,13 +187,37 @@ class AudioSystem {
         }
     }
 
+    // Установка громкости
+    setVolume(volume) {
+        this.volume = Math.max(0, Math.min(1, volume));
+        if (this.audioElement) {
+            this.audioElement.volume = this.volume;
+        }
+        if (this.forwardEffect) {
+            this.forwardEffect.volume = this.volume * 0.3; // 30% от текущей громкости
+        }
+        if (this.backEffect) {
+            this.backEffect.volume = this.volume * 0.3; // 30% от текущей громкости
+        }
+    }
+
+    // Получение громкости
+    getVolume() {
+        return this.volume;
+    }
+
     // Сброс
     reset() {
         this.pause();
         if (this.audioElement) {
             this.audioElement.currentTime = 0;
         }
+        if (this.forwardEffect) {
+            this.forwardEffect.currentTime = 0;
+        }
+        if (this.backEffect) {
+            this.backEffect.currentTime = 0;
+        }
         this.updatePlaybackRate(1.0);
     }
 }
-

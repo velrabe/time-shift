@@ -11,8 +11,6 @@ class AudioSystem {
         // Эффекты перемотки
         this.forwardEffect = null;
         this.backEffect = null;
-        this.isPlayingEffect = false;
-        this.mainTrackTime = 0; // Сохраняем позицию основного трека
     }
 
     // Инициализация
@@ -46,9 +44,6 @@ class AudioSystem {
             console.error('Audio load error:', e, 'src:', this.audioElement.src);
         });
         
-        this.audioElement.addEventListener('canplaythrough', () => {
-            console.log('Audio file loaded and ready');
-        });
         
         // Добавляем треки (можно расширить)
         this.tracks = [
@@ -73,7 +68,6 @@ class AudioSystem {
         // Используем абсолютный путь относительно текущей страницы
         const url = new URL(track.url, window.location.href);
         this.audioElement.src = url.href;
-        console.log('Setting audio track:', url.href);
         
         // Загружаем трек
         this.audioElement.load();
@@ -94,7 +88,6 @@ class AudioSystem {
         
         // Проверяем готовность
         if (this.audioElement.readyState < 2) {
-            console.log('Audio not ready yet, waiting...');
             this.audioElement.addEventListener('canplay', () => {
                 this.audioElement.play().catch(e => {
                     console.error('Audio play failed after load:', e);
@@ -106,11 +99,12 @@ class AudioSystem {
         const playPromise = this.audioElement.play();
         if (playPromise !== undefined) {
             playPromise.then(() => {
-                console.log('Audio playing successfully');
                 this.isPlaying = true;
             }).catch(e => {
-                console.error('Audio play failed:', e);
                 // Это нормально, если пользователь еще не взаимодействовал
+                if (e.name !== 'NotAllowedError') {
+                    console.error('Audio play failed:', e);
+                }
             });
         }
     }
@@ -165,26 +159,6 @@ class AudioSystem {
         this.forwardEffect.play().catch(e => {
             console.error('Failed to play forward effect:', e);
         });
-    }
-
-    // Обработка событий
-    onEvent(event, data) {
-        switch (event) {
-            case 'PAUSE':
-                this.pause();
-                break;
-            case 'RESUME':
-                if (this.isPlaying) {
-                    this.play();
-                }
-                break;
-            case 'TICK_STEP':
-                if (data && data.stepDuration) {
-                    const speedMultiplier = 1.0 / data.stepDuration;
-                    this.updatePlaybackRate(speedMultiplier);
-                }
-                break;
-        }
     }
 
     // Установка громкости

@@ -10,19 +10,30 @@
     <div id="game-container">
         <!-- UI Overlay -->
         <div id="ui-overlay">
-            <div id="top-bar">
-                <div id="score-display">
-                    <span>Score: <span id="current-score">0</span></span>
-                    <span>Best: <span id="best-score">0</span></span>
+            <div id="hud">
+                <div id="hud-top">
+                    <div id="best-hint" class="hud-chip">
+                        <div class="hud-chip-label">best</div>
+                        <div id="best-score" class="hud-chip-value">0</div>
+                    </div>
+
+                    <div id="streak-progress" aria-label="Streak progress">
+                        <div class="streak-bar" role="progressbar" aria-valuemin="0" aria-valuemax="50" aria-valuenow="0">
+                            <div id="streak-fill"></div>
+                        </div>
+                        <div id="streak-text">0/50</div>
+                    </div>
+
+                    <div id="hud-actions">
+                        <button id="sound-btn" class="icon-btn" aria-label="Sound" title="Sound">🔊</button>
+                        <button id="pause-btn" class="icon-btn" aria-label="Pause" title="Pause">⏸</button>
+                    </div>
                 </div>
-                <div id="streak-display">
-                    Streak: <span id="streak-count">0</span>
+
+                <div id="score-hud" aria-label="Score">
+                    <div id="score-value">0</div>
+                    <div id="score-label">score</div>
                 </div>
-                <button id="pause-btn" class="ui-btn">⏸</button>
-            </div>
-            
-            <div id="perks-bar">
-                <div id="perks-container"></div>
             </div>
         </div>
 
@@ -39,7 +50,10 @@
 
         <!-- Control Buttons -->
         <div id="controls">
-            <div id="control-buttons"></div>
+            <div id="controls-inner">
+                <div id="control-buttons"></div>
+                <button id="slowdown-btn" class="ui-btn slow-btn" disabled>Slow down (-10)</button>
+            </div>
         </div>
 
         <!-- Pause Screen -->
@@ -47,6 +61,11 @@
             <div class="overlay-content">
                 <h2>Paused</h2>
                 <button id="resume-btn" class="ui-btn">Resume</button>
+                <div class="volume-control">
+                    <label for="pause-volume-slider">Volume:</label>
+                    <input type="range" id="pause-volume-slider" min="0" max="100" value="50">
+                    <span id="pause-volume-value">50%</span>
+                </div>
             </div>
         </div>
 
@@ -56,7 +75,7 @@
                 <h2>Game Over</h2>
                 <div id="final-score">Score: 0</div>
                 <div id="game-over-buttons">
-                    <button id="continue-btn" class="ui-btn perk-btn hidden">Continue</button>
+                    <button id="continue-btn" class="ui-btn" disabled>Continue</button>
                     <button id="restart-btn" class="ui-btn">Restart</button>
                 </div>
             </div>

@@ -16,7 +16,7 @@ class Director {
 
     // Обновление директора
     update(state) {
-        const { timer, streak } = state;
+        const { timer, streak, perks } = state;
         
         // Инициализация при первом запуске
         if (!this.initialized) {
@@ -68,6 +68,21 @@ class Director {
             const end = window.start + window.length - 1;
             return end < timer.current;
         });
+
+        // Начисление streak: 1 очко за КАЖДОЕ danger window (независимо от длины окна)
+        if (passedWindows.length > 0) {
+            // Основной путь: напрямую обновляем PerkSystem (не зависит от порядка подписок)
+            if (perks && typeof perks.addStreak === 'function') {
+                perks.addStreak(passedWindows.length);
+            }
+
+            // Сигнал для UI/аналитики (не должен менять streak сам по себе)
+            eventBus.emit('DANGER_PASSED', { count: passedWindows.length });
+            // Обновляем внутреннюю механику Director (TTL ControlSet и т.п.) по каждому окну
+            for (let i = 0; i < passedWindows.length; i++) {
+                this.onDangerPassed(timer.maxReached);
+            }
+        }
         
         // Добавляем пройденные окна в историю
         passedWindows.forEach(window => {
@@ -211,19 +226,6 @@ class Director {
         // 7. Финальная проверка гарантии решения
         this.validateSolution(dangerWindow, timer.current);
         
-        // Логируем только финальный результат генерации
-        console.log('[GENERATE_THREAT]', {
-            current: timer.current,
-            maxReached: timer.maxReached,
-            window: {
-                start: dangerWindow.start,
-                end: dangerWindow.start + dangerWindow.length - 1,
-                length: dangerWindow.length,
-                solutionDelta: dangerWindow.solutionDelta
-            },
-            controlSet: this.controlSet.availableDeltas
-        });
-        
         this.dangerWindows.push(dangerWindow);
     }
     
@@ -294,51 +296,20 @@ class Director {
         return windowStart;
     }
     
-    // Валидация solution - гарантия что она работает
+    // Валидация solution - финальная проверка гарантии
     validateSolution(dangerWindow, current) {
         const solutionDelta = dangerWindow.solutionDelta;
-        let windowStart = dangerWindow.start;
         const windowLength = dangerWindow.length;
-        const windowEnd = windowStart + windowLength - 1;
         
         // Проверяем худший случай: игрок на windowStart - 1
-        const worstCaseCurrent = windowStart - 1;
+        const worstCaseCurrent = dangerWindow.start - 1;
         const worstCaseNewPos = worstCaseCurrent + solutionDelta;
+        const windowEnd = dangerWindow.start + windowLength - 1;
         
         // Solution должна перепрыгнуть окно в худшем случае
-        // Нужно: worstCaseNewPos > windowEnd
         if (worstCaseNewPos <= windowEnd) {
-            // Если solutionDelta недостаточна, сдвигаем окно дальше
-            // НЕ уменьшаем длину окна - это снижает сложность
-            if (solutionDelta <= windowLength) {
-                // solutionDelta недостаточна - сдвигаем окно так, чтобы она работала
-                windowStart = worstCaseCurrent + solutionDelta + 1;
-                dangerWindow.start = windowStart;
-            } else {
-                // solutionDelta достаточна, но окно размещено неправильно
-                windowStart = worstCaseNewPos + 1;
-                dangerWindow.start = windowStart;
-            }
-        }
-        
-        // Дополнительная проверка для текущей позиции
-        const currentNewPos = current + solutionDelta;
-        const finalWindowStart = dangerWindow.start;
-        const finalWindowEnd = finalWindowStart + windowLength - 1;
-        
-        if (currentNewPos >= finalWindowStart && currentNewPos <= finalWindowEnd) {
-            // Даже для текущей позиции не работает - сдвигаем окно дальше
-            dangerWindow.start = currentNewPos + 1;
-        }
-        
-        // Финальная проверка худшего случая после всех корректировок
-        const finalWorstCaseCurrent = dangerWindow.start - 1;
-        const finalWorstCaseNewPos = finalWorstCaseCurrent + solutionDelta;
-        const finalWindowEnd2 = dangerWindow.start + windowLength - 1;
-        
-        if (finalWorstCaseNewPos <= finalWindowEnd2) {
-            // Последняя попытка: сдвигаем окно дальше
-            dangerWindow.start = finalWorstCaseCurrent + solutionDelta + 1;
+            // Сдвигаем окно так, чтобы solution гарантированно перепрыгнула
+            dangerWindow.start = worstCaseCurrent + solutionDelta + 1;
         }
     }
 
@@ -368,21 +339,6 @@ class Director {
         return 4;
     }
 
-    // Выбор безопасного решения
-    chooseSolutionDelta(progress) {
-        const options = [];
-        
-        // Ранняя игра - маленькие значения
-        if (progress < 20) {
-            options.push(1, 2, 3);
-        } else if (progress < 50) {
-            options.push(2, 3, 4, 5);
-        } else {
-            options.push(3, 4, 5, 6, 7);
-        }
-        
-        return options[Math.floor(Math.random() * options.length)];
-    }
 
     // Фильтрация нейтральных дельт (не приводят к попаданию в окно)
     filterNeutralDeltas(deltas, current, window) {
@@ -396,11 +352,6 @@ class Director {
         });
     }
     
-    // Вычисление безопасного расстояния до окна (deprecated, используется calculateWindowStartForSolution)
-    calculateSafeDistance(solutionDelta, stepDuration) {
-        const reactionSteps = 2;
-        return Math.max(solutionDelta + reactionSteps, 3);
-    }
 
     // Вычисление gapSteps (расстояние до следующей угрозы) в зависимости от прогресса
     calculateGapSteps(progress) {
@@ -570,14 +521,6 @@ class Director {
         return false;
     }
     
-    // Получение максимально допустимой дельты для прогресса
-    maxDeltaAllowed(progress) {
-        if (progress < 10) return 2;
-        if (progress < 30) return 3;
-        if (progress < 60) return 4;
-        if (progress < 100) return 5;
-        return 6;
-    }
 
     // Обеспечение наличия кнопок
     ensureButtons(state) {
@@ -643,19 +586,6 @@ class Director {
             .filter(w => (w.start + w.length - 1) >= timer.current)
             .reduce((min, w) => (!min || w.start < min.start ? w : min), null);
         
-        // Доп. защита: логируем если окна есть, но nextWindow не найден
-        if (!nextWindow && this.dangerWindows.length > 0) {
-            console.warn('[DIRECTOR] dangerWindows exist but nextWindow not found', {
-                current: timer.current,
-                windows: this.dangerWindows.map(w => ({
-                    start: w.start,
-                    end: w.start + w.length - 1,
-                    len: w.length,
-                    sol: w.solutionDelta
-                }))
-            });
-        }
-        
         // Определяем активные кнопки
         const activeDeltas = new Set();
         if (nextWindow) {
@@ -720,92 +650,9 @@ class Director {
             };
         });
         
-        // Логируем только финальный результат генерации кнопок
-        console.log('[GENERATE_BUTTONS]', {
-            current: timer.current,
-            nextWindow: nextWindow ? {
-                start: nextWindow.start,
-                end: nextWindow.start + nextWindow.length - 1,
-                length: nextWindow.length,
-                solutionDelta: nextWindow.solutionDelta
-            } : null,
-            activeButtons: buttons.filter(b => b.active).map(b => ({ delta: b.delta, type: b.type })),
-            controlSet: availableDeltas
-        });
-        
         return buttons;
     }
 
-    // Вычисление безопасной дельты для решения
-    calculateSafeDelta(current, window) {
-        // Ищем дельту, которая пропустит окно
-        const windowStart = window.start;
-        const windowEnd = window.start + window.length - 1;
-        
-        // Пробуем дельты от 1 до 10
-        for (let delta = 1; delta <= 10; delta++) {
-            const newPos = current + delta;
-            if (newPos > windowEnd) {
-                return delta;
-            }
-        }
-        
-        // Если не нашли, возвращаем дельту больше окна
-        return Math.max(windowEnd - current + 1, 1);
-    }
-    
-    // Генерация нейтральной дельты
-    generateNeutralDelta(current, window) {
-        // Кнопка, которая не приведет к попаданию в окно
-        const safeOptions = [];
-        const windowStart = window.start;
-        const windowEnd = window.start + window.length - 1;
-        
-        for (let d = -5; d <= 10; d++) {
-            if (d === 0) continue;
-            const newPos = current + d;
-            // Безопасно если до окна или после окна
-            if (newPos < windowStart || newPos > windowEnd) {
-                safeOptions.push(d);
-            }
-        }
-        
-        if (safeOptions.length === 0) {
-            // Если нет безопасных вариантов, возвращаем дельту после окна
-            return Math.max(windowEnd - current + 1, 1);
-        }
-        
-        return safeOptions[Math.floor(Math.random() * safeOptions.length)];
-    }
-
-    // Генерация ловушки
-    generateTrapDelta(current, window) {
-        // Кнопка, которая приведет к попаданию в окно
-        const trapOptions = [];
-        for (let d = -7; d <= 7; d++) {
-            if (d === window.solutionDelta || d === 0) continue;
-            const newPos = current + d;
-            if (newPos >= window.start && newPos < window.start + window.length) {
-                trapOptions.push(d);
-            }
-        }
-        
-        if (trapOptions.length === 0) {
-            return window.solutionDelta === 1 ? -1 : 1;
-        }
-        
-        return trapOptions[Math.floor(Math.random() * trapOptions.length)];
-    }
-
-    // Перемешивание массива
-    shuffle(array) {
-        const shuffled = [...array];
-        for (let i = shuffled.length - 1; i > 0; i--) {
-            const j = Math.floor(Math.random() * (i + 1));
-            [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-        }
-        return shuffled;
-    }
 
     // Проверка попадания в опасное окно
     checkDanger(current) {

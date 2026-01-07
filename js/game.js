@@ -11,6 +11,7 @@ class Game {
         
         this.state = 'MENU'; // MENU, RUNNING, PAUSED, GAME_OVER, COUNTDOWN
         this.bestScore = 0;
+        this.soundMuted = false;
         this.lastSnapshotTime = 0;
         this.snapshotInterval = 1000; // сохранять каждую секунду
         
@@ -42,6 +43,12 @@ class Game {
         
         // Инициализация аудио
         this.audio.init();
+
+        // Загрузка настроек звука
+        const settings = this.storage.loadSettings() || {};
+        const savedVolume = typeof settings.volume === 'number' ? settings.volume : 50;
+        this.soundMuted = !!settings.muted;
+        this.audio.setVolume(this.soundMuted ? 0 : savedVolume / 100);
         
         // Обновление UI
         this.updateUI();
@@ -80,11 +87,6 @@ class Game {
         // Делаем экземпляр игры доступным глобально для обработчиков
         window.gameInstance = this;
 
-        // События перков
-        eventBus.on('PERK_ACTIVATED', (data) => {
-            this.onPerkActivated(data.perkId);
-        });
-
         // События паузы/резюма
         eventBus.on('PAUSE', () => {
             this.pause();
@@ -117,6 +119,11 @@ class Game {
             pauseBtn.addEventListener('click', () => this.pause());
         }
 
+        const soundBtn = document.getElementById('sound-btn');
+        if (soundBtn) {
+            soundBtn.addEventListener('click', () => this.toggleSound());
+        }
+
         const resumeBtn = document.getElementById('resume-btn');
         if (resumeBtn) {
             resumeBtn.addEventListener('click', () => this.resume());
@@ -138,26 +145,46 @@ class Game {
             playBtn.addEventListener('click', () => this.start());
         }
 
+        const slowDownBtn = document.getElementById('slowdown-btn');
+        if (slowDownBtn) {
+            slowDownBtn.addEventListener('click', () => this.useSlowDown());
+        }
+
         // Ползунок громкости
         const volumeSlider = document.getElementById('volume-slider');
         const volumeValue = document.getElementById('volume-value');
-        if (volumeSlider && volumeValue) {
-            // Загружаем сохраненное значение громкости
-            const savedVolume = this.storage.loadSettings()?.volume || 50;
-            volumeSlider.value = savedVolume;
-            volumeValue.textContent = `${savedVolume}%`;
-            this.audio.setVolume(savedVolume / 100);
-            
-            volumeSlider.addEventListener('input', (e) => {
-                const volume = parseInt(e.target.value);
-                volumeValue.textContent = `${volume}%`;
+        const pauseVolumeSlider = document.getElementById('pause-volume-slider');
+        const pauseVolumeValue = document.getElementById('pause-volume-value');
+
+        const applyVolumeToUI = (volume) => {
+            if (volumeSlider) volumeSlider.value = volume;
+            if (volumeValue) volumeValue.textContent = `${volume}%`;
+            if (pauseVolumeSlider) pauseVolumeSlider.value = volume;
+            if (pauseVolumeValue) pauseVolumeValue.textContent = `${volume}%`;
+        };
+
+        const onVolumeInput = (raw) => {
+            const volume = Math.max(0, Math.min(100, parseInt(raw, 10) || 0));
+            applyVolumeToUI(volume);
+
+            const settings = this.storage.loadSettings() || {};
+            settings.volume = volume;
+            this.storage.saveSettings(settings);
+
+            if (!this.soundMuted) {
                 this.audio.setVolume(volume / 100);
-                
-                // Сохраняем настройку
-                const settings = this.storage.loadSettings() || {};
-                settings.volume = volume;
-                this.storage.saveSettings(settings);
-            });
+            }
+        };
+
+        // Инициализация UI громкости из сохраненных настроек
+        const savedVolume = this.storage.loadSettings()?.volume ?? 50;
+        applyVolumeToUI(savedVolume);
+
+        if (volumeSlider) {
+            volumeSlider.addEventListener('input', (e) => onVolumeInput(e.target.value));
+        }
+        if (pauseVolumeSlider) {
+            pauseVolumeSlider.addEventListener('input', (e) => onVolumeInput(e.target.value));
         }
 
         // Обработка видимости вкладки
@@ -180,6 +207,12 @@ class Game {
         this.director = new Director();
         this.perks.reset();
         this.audio.reset();
+
+        // ВАЖНО: при новой игре пересоздаем DOM-окно ленты,
+        // иначе там остаются значения из прошлой сессии и current=0 не центрируется до первого шага.
+        if (this.renderer && typeof this.renderer.resetStripWindow === 'function') {
+            this.renderer.resetStripWindow();
+        }
         
         // Обратный отсчет
         await this.renderer.showCountdown();
@@ -188,6 +221,7 @@ class Game {
         this.lastUpdateTime = performance.now();
         this.lastSnapshotTime = Date.now();
         this.lastRenderedButtons = null;
+        this.lastRenderedCurrent = null;
         this.lastPerksRender = 0;
         this.userInteracted = true; // Помечаем как взаимодействовал (клик на PLAY)
         
@@ -203,18 +237,32 @@ class Game {
         // Запуск аудио при старте таймера (после взаимодействия пользователя)
         this.audio.play();
         
+        // Сбрасываем состояние рендера перед новой сессией,
+        // иначе до первого TICK_STEP круг/лента могут выглядеть "замороженными"
+        if (this.renderer) {
+            if (typeof this.renderer.stopStripAnimation === 'function') this.renderer.stopStripAnimation();
+            if (typeof this.renderer.stopCircleAnimation === 'function') this.renderer.stopCircleAnimation();
+            this.renderer.lastCurrentValue = null;
+        }
+
         // Рендерим ленту для начального состояния (current = 0)
         this.renderer.renderNumberStrip(this.timer, this.director);
         
         // Устанавливаем правильную начальную позицию ленты для current = 0
-        // И сразу запускаем анимацию для перехода к current = 1
+        // И запускаем цикл анимации круга, привязанный к длительности шага
         requestAnimationFrame(() => {
             // Устанавливаем начальную позицию для current = 0 мгновенно (без анимации)
             this.renderer.updateStripPosition(this.timer.current, null);
             
-            // Запускаем анимацию круга для начального состояния
+            // Запускаем цикл круга для первого шага (лента будет двигаться от событий TICK_STEP/SHIFT_USED)
             const initialStepDuration = this.timer.calculateStepDuration();
-            this.renderer.animateFocusZone(initialStepDuration);
+            if (typeof this.renderer.animateCircleAuto === 'function') {
+                this.renderer.animateCircleAuto(initialStepDuration);
+            }
+            // Для ленты: считаем это "первым current", чтобы следующий TICK_STEP правильно анимировал delta=+1
+            if (this.renderer) {
+                this.renderer.lastCurrentValue = this.timer.current;
+            }
             
         });
         
@@ -276,25 +324,16 @@ class Game {
     // Рендеринг
     render() {
         const gameState = this.getGameState();
-        
-        // Лента чисел (рендерим каждый кадр для плавности, передаем director для истории)
-        this.renderer.renderNumberStrip(this.timer, this.director);
+        // Лента/круг теперь управляются событийно внутри Renderer (TICK_STEP/SHIFT_USED),
+        // чтобы корректно анимировать "конвейер" и не конфликтовать с gameLoop.
         
         // Кнопки (рендерим только при изменении)
         if (this.director.currentButtons.length === 0) {
             this.director.ensureButtons(gameState);
         }
-        // Рендерим кнопки только если они изменились
         if (this.director.currentButtons.length > 0 && this.shouldRenderButtons()) {
             this.renderer.renderControlButtons(this.director.currentButtons);
             this.lastRenderedButtons = JSON.stringify(this.director.currentButtons);
-        }
-        
-        // Перки (рендерим реже)
-        if (!this.lastPerksRender || Date.now() - this.lastPerksRender > 500) {
-            const availablePerks = this.perks.getAvailablePerks(gameState);
-            this.renderer.renderPerks(availablePerks);
-            this.lastPerksRender = Date.now();
         }
         
         // UI
@@ -318,25 +357,18 @@ class Game {
         return {
             timer: this.timer,
             director: this.director,
-            streak: this.perks.streak,
-            dangerPassedStreak: this.perks.dangerPassedStreak,
-            bestScore: this.bestScore
+            perks: this.perks,
+            streak: this.perks?.getStreakPoints ? this.perks.getStreakPoints() : (this.perks?.streakPoints || 0),
+            streakPoints: this.perks.getStreakPoints ? this.perks.getStreakPoints() : (this.perks.streakPoints || 0),
+            bestScore: this.bestScore,
+            gameStatus: this.state,
+            soundMuted: this.soundMuted
         };
     }
 
     // Обработка шага таймера
     onTickStep(data) {
-        // Проверка прохождения опасного окна
-        const passedWindows = this.director.dangerWindows.filter(window => {
-            const end = window.start + window.length - 1;
-            return end < this.timer.current;
-        });
-        
-        if (passedWindows.length > 0) {
-            this.perks.dangerPassedStreak++;
-            eventBus.emit('DANGER_PASSED');
-            this.director.onDangerPassed(this.timer.maxReached);
-        }
+        // начисление streak за passed danger zone теперь делается в Director.update()
     }
 
     // Обработка использования сдвига
@@ -384,20 +416,27 @@ class Game {
         }
     }
 
-    // Обработка активации перка
-    onPerkActivated(perkId) {
-        if (this.state !== 'RUNNING' && this.state !== 'GAME_OVER') return;
-        
-        const gameState = this.getGameState();
-        const result = this.perks.activatePerk(perkId, gameState);
-        
-        if (!result) return;
-        
-        if (result.type === 'continue') {
-            this.continueAfterDeath();
-        } else if (result.type === 'inversion') {
-            this.timer.activateInversion(result.duration);
+    toggleSound() {
+        const settings = this.storage.loadSettings() || {};
+        const savedVolume = typeof settings.volume === 'number' ? settings.volume : 50;
+
+        this.soundMuted = !this.soundMuted;
+        settings.muted = this.soundMuted;
+        this.storage.saveSettings(settings);
+
+        this.audio.setVolume(this.soundMuted ? 0 : savedVolume / 100);
+        this.updateUI();
+    }
+
+    useSlowDown() {
+        if (this.state !== 'RUNNING') return;
+        if (!this.perks || typeof this.perks.useSlowDown !== 'function') return;
+        const ok = this.perks.useSlowDown();
+        if (!ok) return;
+        if (this.timer && typeof this.timer.activateSlowDown === 'function') {
+            this.timer.activateSlowDown(10);
         }
+        this.updateUI();
     }
 
     // Пауза
@@ -441,6 +480,25 @@ class Game {
         
         this.state = 'GAME_OVER';
         this.audio.pause();
+
+        // Запоминаем danger window, в котором произошла смерть,
+        // чтобы Continue мог вернуть игрока на точку ДО начала этого окна
+        const deathWindow = this.director?.dangerWindows?.find(w =>
+            this.timer.current >= w.start && this.timer.current < (w.start + w.length)
+        );
+        this.lastDeathDangerWindow = deathWindow ? {
+            start: deathWindow.start,
+            length: deathWindow.length,
+            solutionDelta: deathWindow.solutionDelta
+        } : null;
+
+        // Останавливаем анимации ленты/круга, чтобы экран Game Over был "заморожен"
+        if (this.renderer && typeof this.renderer.stopStripAnimation === 'function') {
+            this.renderer.stopStripAnimation();
+        }
+        if (this.renderer && typeof this.renderer.stopCircleAnimation === 'function') {
+            this.renderer.stopCircleAnimation();
+        }
         
         if (this.animationFrameId) {
             cancelAnimationFrame(this.animationFrameId);
@@ -456,10 +514,7 @@ class Game {
         }
         
         // Проверка доступности Continue
-        const gameState = this.getGameState();
-        const canContinue = this.perks.getAvailablePerks(gameState).some(p => 
-            p.id === 'continue' && p.charged
-        );
+        const canContinue = !!(this.perks && typeof this.perks.hasSecondLife === 'function' && this.perks.hasSecondLife());
         
         this.renderer.showGameOverScreen(score, canContinue);
         eventBus.emit('DEATH');
@@ -471,27 +526,69 @@ class Game {
     // Продолжение после смерти
     continueAfterDeath() {
         if (this.state !== 'GAME_OVER') return;
+
+        // "Second life" можно потратить только если было накоплено 50/50
+        if (!this.perks || typeof this.perks.consumeSecondLife !== 'function' || !this.perks.consumeSecondLife()) {
+            return;
+        }
         
         this.renderer.hideGameOverScreen();
         
-        // Восстановление на безопасное значение (до опасного окна)
-        // Находим последнее пройденное окно или используем отступ
+        // Продолжаем с точки прямо ПЕРЕД началом danger zone, в которой произошла смерть.
+        // Важно: НЕ очищаем dangerWindows, иначе Director сгенерирует новую "ленту".
         let safeValue = Math.max(0, this.timer.current - 5);
-        
-        // Если есть пройденные окна, ставим после последнего
-        if (this.director.passedDangerWindows.length > 0) {
-            const lastWindow = this.director.passedDangerWindows[this.director.passedDangerWindows.length - 1];
-            safeValue = Math.max(0, lastWindow.start + lastWindow.length);
+
+        const w =
+            this.lastDeathDangerWindow ||
+            this.director?.dangerWindows?.find(win =>
+                this.timer.current >= win.start && this.timer.current < (win.start + win.length)
+            );
+
+        if (w && typeof w.start === 'number') {
+            safeValue = Math.max(0, w.start - 1);
         }
-        
+
         this.timer.current = safeValue;
-        
-        // Очистка опасных окон
-        this.director.dangerWindows = [];
+        // Чтобы после Continue не было "мгновенного тика" из-за паузы на Game Over
+        this.timer.lastStepTime = 0;
+
+        // Обновляем кнопки под восстановленную позицию
         this.director.currentButtons = [];
-        
-        // Сброс стрика (частичный)
-        this.perks.dangerPassedStreak = Math.max(0, this.perks.dangerPassedStreak - 5);
+        const gameState = this.getGameState();
+        this.director.ensureButtons(gameState);
+        if (this.director.currentButtons.length > 0) {
+            this.renderer.renderControlButtons(this.director.currentButtons);
+        }
+
+        // Синхронизируем ленту и СРАЗУ запускаем круг (иначе до первого TICK_STEP будет "заморозка")
+        if (this.renderer) {
+            if (typeof this.renderer.stopStripAnimation === 'function') this.renderer.stopStripAnimation();
+            if (typeof this.renderer.stopCircleAnimation === 'function') this.renderer.stopCircleAnimation();
+            this.renderer.lastCurrentValue = null;
+            if (typeof this.renderer.handleStepChange === 'function') {
+                this.renderer.handleStepChange({
+                    current: this.timer.current,
+                    timer: this.timer,
+                    director: this.director,
+                    stepDurationSec: this.timer.calculateStepDuration(),
+                    isAuto: true
+                });
+            } else {
+                // Fallback: если API изменится
+                if (typeof this.renderer.updateStripPosition === 'function') {
+                    this.renderer.updateStripPosition(this.timer.current, null);
+                }
+                if (typeof this.renderer.updateStripClasses === 'function') {
+                    this.renderer.updateStripClasses(this.timer.current, this.director);
+                }
+                if (typeof this.renderer.animateCircleAuto === 'function') {
+                    this.renderer.animateCircleAuto(this.timer.calculateStepDuration());
+                }
+            }
+        }
+
+        // Использовали checkpoint — очищаем, чтобы не применять повторно
+        this.lastDeathDangerWindow = null;
         
         this.state = 'RUNNING';
         this.lastUpdateTime = performance.now();

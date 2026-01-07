@@ -31,24 +31,132 @@ body {
     pointer-events: none;
 }
 
-#top-bar {
+/* New HUD */
+#hud {
+    position: absolute;
+    top: 16px;
+    left: 16px;
+    right: 16px;
+    pointer-events: none;
+}
+
+#hud-top {
     display: flex;
-    justify-content: space-between;
     align-items: center;
-    padding: 20px;
+    justify-content: space-between;
+    gap: 12px;
     pointer-events: auto;
 }
 
-#score-display {
+.hud-chip {
     display: flex;
-    gap: 20px;
-    font-size: 18px;
-    font-weight: bold;
+    flex-direction: column;
+    gap: 2px;
+    padding: 8px 10px;
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.12);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    backdrop-filter: blur(8px);
 }
 
-#streak-display {
+.hud-chip-label {
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    opacity: 0.75;
+}
+
+.hud-chip-value {
     font-size: 16px;
-    color: #ffd700;
+    font-weight: 800;
+    line-height: 1.1;
+}
+
+#hud-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    pointer-events: auto;
+}
+
+.icon-btn {
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.14);
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    color: #fff;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    transition: transform 0.15s, background 0.15s;
+}
+
+.icon-btn:hover {
+    background: rgba(255, 255, 255, 0.22);
+    transform: translateY(-1px);
+}
+
+.icon-btn:active {
+    transform: translateY(0);
+}
+
+#streak-progress {
+    flex: 1;
+    max-width: 360px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    pointer-events: none;
+}
+
+.streak-bar {
+    width: 100%;
+    height: 10px;
+    border-radius: 999px;
+    overflow: hidden;
+    background: rgba(255, 255, 255, 0.14);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+}
+
+#streak-fill {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, #22c55e 0%, #ffd700 60%, #a855f7 100%);
+    transition: width 0.18s ease-out;
+}
+
+#streak-text {
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.85);
+    letter-spacing: 0.02em;
+}
+
+#score-hud {
+    position: absolute;
+    top: 68px;
+    left: 50%;
+    transform: translateX(-50%);
+    text-align: center;
+    pointer-events: none;
+}
+
+#score-value {
+    font-size: 72px;
+    font-weight: 900;
+    line-height: 0.95;
+    text-shadow: 0 0 25px rgba(255, 255, 255, 0.18);
+}
+
+#score-label {
+    margin-top: 4px;
+    font-size: 12px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    opacity: 0.72;
 }
 
 .ui-btn {
@@ -67,17 +175,18 @@ body {
     transform: scale(1.05);
 }
 
-.ui-btn:active {
-    transform: scale(0.95);
+.ui-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
 }
 
-#perks-bar {
-    position: absolute;
-    top: 80px;
-    right: 20px;
-    display: flex;
-    gap: 10px;
-    pointer-events: auto;
+.ui-btn:disabled:hover {
+    transform: none;
+    background: rgba(255, 255, 255, 0.2);
+}
+
+.ui-btn:active {
+    transform: scale(0.95);
 }
 
 .perk-btn {
@@ -154,9 +263,14 @@ body {
     border: 2px solid #ff0000;
 }
 
+.number-circle.passed {
+    background-color: #22c55e; /* зелёный */
+    border: 2px solid #16a34a;
+}
+
 .number-circle.active {
-    width: 50px;
-    height: 50px;
+    /* ВАЖНО: не меняем width/height, иначе ломаем геометрию ленты и центрирование */
+    transform: scale(1.25);
     box-shadow: 0 0 15px rgba(255, 255, 255, 0.5);
 }
 
@@ -211,6 +325,13 @@ body {
     z-index: 50;
 }
 
+#controls-inner {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+}
+
 #control-buttons {
     display: flex;
     gap: 15px;
@@ -233,6 +354,29 @@ body {
 .control-btn:disabled:hover {
     transform: none;
     background: rgba(255, 255, 255, 0.15);
+}
+
+.slow-btn {
+    min-width: 220px;
+    padding: 12px 22px;
+    border-radius: 999px;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+}
+
+.slow-btn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+}
+
+.slow-btn:disabled:hover {
+    transform: none;
+    background: rgba(255, 255, 255, 0.2);
+}
+
+.slow-btn.ready {
+    background: rgba(34, 197, 94, 0.25);
+    border-color: rgba(34, 197, 94, 0.55);
 }
 
 .control-btn {
@@ -375,6 +519,7 @@ body {
     box-shadow: 0 0 30px rgba(102, 126, 234, 0.6);
 }
 
+.volume-control,
 #volume-control {
     display: flex;
     align-items: center;
@@ -382,11 +527,13 @@ body {
     margin-top: 20px;
 }
 
+.volume-control label,
 #volume-control label {
     font-size: 16px;
     color: #fff;
 }
 
+.volume-control input[type="range"],
 #volume-slider {
     flex: 1;
     height: 6px;
@@ -396,6 +543,7 @@ body {
     -webkit-appearance: none;
 }
 
+.volume-control input[type="range"]::-webkit-slider-thumb,
 #volume-slider::-webkit-slider-thumb {
     -webkit-appearance: none;
     appearance: none;
@@ -407,11 +555,13 @@ body {
     transition: all 0.2s;
 }
 
+.volume-control input[type="range"]::-webkit-slider-thumb:hover,
 #volume-slider::-webkit-slider-thumb:hover {
     background: #764ba2;
     transform: scale(1.2);
 }
 
+.volume-control input[type="range"]::-moz-range-thumb,
 #volume-slider::-moz-range-thumb {
     width: 18px;
     height: 18px;
@@ -422,11 +572,13 @@ body {
     transition: all 0.2s;
 }
 
+.volume-control input[type="range"]::-moz-range-thumb:hover,
 #volume-slider::-moz-range-thumb:hover {
     background: #764ba2;
     transform: scale(1.2);
 }
 
+.volume-control span,
 #volume-value {
     font-size: 16px;
     color: #fff;
@@ -443,8 +595,8 @@ body {
     }
     
     .number-circle.active {
-        width: 38px;
-        height: 38px;
+        /* То же правило: не менять layout, только transform */
+        transform: scale(1.25);
     }
     
     .control-btn {
@@ -466,6 +618,26 @@ body {
     .focus-circle {
         width: 65px; /* Минимальный размер (уменьшен в 2 раза) */
         height: 65px;
+    }
+
+    #hud {
+        top: 12px;
+        left: 12px;
+        right: 12px;
+    }
+
+    #score-hud {
+        top: 62px;
+    }
+
+    #score-value {
+        font-size: 60px;
+    }
+
+    .icon-btn {
+        width: 40px;
+        height: 40px;
+        border-radius: 12px;
     }
 }
 

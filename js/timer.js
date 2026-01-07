@@ -16,6 +16,12 @@ class Timer {
         this.inversionActive = false;
         this.inversionEndTime = 0;
         this.frozenStepDuration = null;
+
+        // Slow down (streak perk)
+        this.slowDownActive = false;
+        this.slowDownEndTime = 0;
+        this.slowDownRecoverStartTime = 0;
+        this.slowDownRecoverEndTime = 0;
     }
 
     // Вычисление длительности шага по формуле
@@ -24,10 +30,25 @@ class Timer {
             // Во время инверсии скорость заморожена на значении активации
             return this.frozenStepDuration || this.stepDurationSec;
         }
+
+        const now = Date.now();
+        if (this.slowDownActive && now < this.slowDownEndTime) {
+            // Во время slow down скорость = дефолтная
+            return this.S0;
+        }
         
         const progress = this.maxReached;
-        const stepDuration = this.Smax + (this.S0 - this.Smax) * Math.exp(-this.k * progress);
-        return Math.max(stepDuration, this.Smax);
+        const target = this.Smax + (this.S0 - this.Smax) * Math.exp(-this.k * progress);
+        const clampedTarget = Math.max(target, this.Smax);
+
+        // Быстро возвращаемся к нормальной скорости после slow down (быстрый "набор скорости")
+        if (this.slowDownRecoverStartTime && now >= this.slowDownRecoverStartTime && now < this.slowDownRecoverEndTime) {
+            const p = (now - this.slowDownRecoverStartTime) / Math.max(1, (this.slowDownRecoverEndTime - this.slowDownRecoverStartTime));
+            const t = Math.max(0, Math.min(1, p));
+            return this.S0 + (clampedTarget - this.S0) * t;
+        }
+
+        return clampedTarget;
     }
 
     // Обновление таймера
@@ -67,7 +88,11 @@ class Timer {
             this.maxReached = this.current;
         }
         
-        eventBus.emit('SHIFT_USED', { delta, current: this.current });
+        eventBus.emit('SHIFT_USED', { 
+            delta, 
+            current: this.current,
+            timer: this // Передаем таймер для обновления ленты
+        });
     }
 
     // Активация инверсии
@@ -95,6 +120,16 @@ class Timer {
         }
     }
 
+    // Активация slow down: скорость = дефолт (S0) на durationSec, затем быстрый возврат к нормальной
+    activateSlowDown(durationSec = 10, recoverSec = 2.5) {
+        const now = Date.now();
+        this.slowDownActive = true;
+        this.slowDownEndTime = now + durationSec * 1000;
+        this.slowDownRecoverStartTime = this.slowDownEndTime;
+        this.slowDownRecoverEndTime = this.slowDownEndTime + recoverSec * 1000;
+        eventBus.emit('SLOWDOWN_ACTIVATED', { duration: durationSec });
+    }
+
     // Получение множителя скорости для аудио
     getSpeedMultiplier() {
         return Math.min(this.S0 / this.stepDurationSec, this.S0 / this.Smax);
@@ -109,6 +144,10 @@ class Timer {
         this.lastStepTime = 0;
         this.inversionActive = false;
         this.inversionEndTime = 0;
+        this.slowDownActive = false;
+        this.slowDownEndTime = 0;
+        this.slowDownRecoverStartTime = 0;
+        this.slowDownRecoverEndTime = 0;
     }
 
     // Сериализация для снапшота
@@ -120,7 +159,11 @@ class Timer {
             stepDurationSec: this.stepDurationSec,
             inversionActive: this.inversionActive,
             inversionEndTime: this.inversionEndTime,
-            frozenStepDuration: this.frozenStepDuration
+            frozenStepDuration: this.frozenStepDuration,
+            slowDownActive: this.slowDownActive,
+            slowDownEndTime: this.slowDownEndTime,
+            slowDownRecoverStartTime: this.slowDownRecoverStartTime,
+            slowDownRecoverEndTime: this.slowDownRecoverEndTime
         };
     }
 
@@ -133,6 +176,10 @@ class Timer {
         this.inversionActive = snapshot.inversionActive || false;
         this.inversionEndTime = snapshot.inversionEndTime || 0;
         this.frozenStepDuration = snapshot.frozenStepDuration || null;
+        this.slowDownActive = snapshot.slowDownActive || false;
+        this.slowDownEndTime = snapshot.slowDownEndTime || 0;
+        this.slowDownRecoverStartTime = snapshot.slowDownRecoverStartTime || 0;
+        this.slowDownRecoverEndTime = snapshot.slowDownRecoverEndTime || 0;
         this.lastStepTime = 0; // сброс для корректного обновления
     }
 }

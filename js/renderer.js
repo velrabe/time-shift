@@ -4,29 +4,53 @@ class Renderer {
         this.numberStrip = document.getElementById('number-strip');
         this.focusZone = document.getElementById('focus-zone');
         this.controlButtons = document.getElementById('control-buttons');
-        this.perksContainer = document.getElementById('perks-container');
+        this.perksContainer = document.getElementById('perks-container'); // legacy (может быть null)
         
         this.focusZoneCenter = 0; // будет вычислено
-        this.numberWidth = 0;
-        this.visibleNumbers = [];
         
-        // Анимация focus zone
-        this.focusZoneAnimationId = null;
-        this.focusZoneBaseSize = 0; // Базовый размер круга
+        // Состояние анимаций (разделены для независимой работы)
+        this.circleAnimationId = null; // ID анимации круга
+        this.stripAnimationId = null;   // ID анимации ленты
+        this.currentStripOffset = 0;   // Текущее смещение ленты в px
         
-        // Анимация ленты
-        this.stripAnimationId = null;
-        this.currentStripOffset = 0; // Текущее смещение ленты в px
+        // Параметры круга
+        this.focusZoneBaseSize = 0;
+        this.circleExpandScale = 2.0; // Круг увеличивается в 2 раза
+
+        // Метрики ленты для аналитического расчета оффсета (чтобы не зависеть от DOM-rect дрейфа)
+        this.stripMinValue = 0;        // минимальное значение, отрисованное в ленте
+        this.stripPitchPx = null;      // расстояние между центрами соседних кружков
+        this.stripFirstCenterPx = null; // центр первого кружка относительно левого края ленты
+        this.lastCurrentValue = null;  // последний current (для расчета deltaSteps)
+        this.stripRange = 15;          // "полезный" радиус вокруг current
+        this.stripHalfWindow = 30;     // фактический DOM-буфер (2*30+1 = 61 точка)
+        this.stripRecycleMargin = 10;  // насколько близко к краям допускаем current перед recycle
         
         this.setupFocusZone();
         this.setupEventListeners();
         this.setupFocusZoneAnimation();
     }
 
+    // Полный сброс DOM-окна ленты (нужно при старте новой игры, чтобы current=0 центрировался сразу)
+    resetStripWindow() {
+        if (!this.numberStrip) return;
+        this.stopStripAnimation();
+        this.numberStrip.innerHTML = '';
+        this.stripMinValue = 0;
+        this.stripPitchPx = null;
+        this.stripFirstCenterPx = null;
+        this.lastCurrentValue = null;
+        this.currentStripOffset = 0;
+        this.numberStrip.style.transition = 'none';
+        this.numberStrip.style.transform = `translateX(0px)`;
+    }
+
     setupFocusZone() {
         // Вычисляем центр экрана
         const container = document.getElementById('game-area');
         this.focusZoneCenter = container.offsetWidth / 2;
+        // При ресайзе могут поменяться размеры кружков/маргины (responsive) — пересчитываем метрики
+        this.recomputeStripMetrics();
     }
 
     setupEventListeners() {
@@ -35,37 +59,44 @@ class Renderer {
             this.setupFocusZone();
         });
         
-        // Подписка на события таймера для анимации focus zone и ленты
+        // Подписка на события таймера (автоматический шаг)
         eventBus.on('TICK_STEP', (data) => {
-            if (data && data.stepDuration) {
-                const stepDuration = data.stepDuration;
+            if (!data || !data.stepDuration || !data.timer) return;
+
+            // Director может не успеть добавиться в payload (Renderer подписан раньше Game).
+            // Поэтому берем director из gameInstance, если нужно.
+            const director = data.director || window.gameInstance?.director || null;
+
+            this.handleStepChange({
+                current: data.current,
+                timer: data.timer,
+                director,
+                stepDurationSec: data.stepDuration,
+                isAuto: true
+            });
+        });
+        
+        // Подписка на события сдвига (принудительный шаг через кнопки)
+        eventBus.on('SHIFT_USED', (data) => {
+            if (data && typeof data.current === 'number' && data.timer) {
+                // Круг НЕ останавливаем - он работает независимо!
+                // Только анимируем ленту к новому current
                 
-                // Время начала анимации - СРАЗУ при TICK_STEP (синхронно для круга и ленты)
-                const animationStartTime = performance.now();
-                
-                console.log('[TICK_STEP]', {
+                const director = window.gameInstance?.director || null;
+                this.handleStepChange({
                     current: data.current,
-                    stepDuration: stepDuration,
-                    animationStartTime: animationStartTime
+                    timer: data.timer,
+                    director,
+                    stepDurationSec: data.timer.calculateStepDuration(),
+                    isAuto: false
                 });
-                
-                // СНАЧАЛА обновляем ленту для нового current (если есть timer и director)
-                // Это нужно, чтобы элементы были созданы перед запуском анимации
-                if (data.timer && data.director) {
-                    this.renderNumberStrip(data.timer, data.director);
-                }
-                
-                // Вычисляем целевое смещение для нового current
-                const targetOffset = this.calculateTargetOffset(data.current);
-                
-                // Запускаем синхронные анимации круга и ленты
-                this.animateFocusZoneAndStrip(stepDuration, targetOffset);
             }
         });
         
-        // Остановка анимации при паузе
+        // Остановка анимаций при паузе
         eventBus.on('PAUSE', () => {
-            this.stopFocusZoneAnimation();
+            this.stopCircleAnimation();
+            this.stopStripAnimation();
         });
         
         // Возобновление анимации при резюме
@@ -87,113 +118,37 @@ class Renderer {
     calculateTargetOffset(current) {
         if (!this.numberStrip) return 0;
         
-        const numberEl = this.numberStrip.querySelector(`[data-value="${current}"]`);
-        if (!numberEl) return this.currentStripOffset;
-        
         const container = document.getElementById('game-area');
         if (!container) return this.currentStripOffset;
         
         const containerCenter = container.offsetWidth / 2;
-        const numberRect = numberEl.getBoundingClientRect();
-        const stripRect = this.numberStrip.getBoundingClientRect();
-        const numberCenter = numberRect.left - stripRect.left + numberRect.width / 2;
-        const targetOffset = containerCenter - numberCenter;
-        
-        return targetOffset;
+
+        // Точный расчет через layout-координаты (НЕ зависит от translateX ленты)
+        // offsetLeft/offsetWidth не учитывают transform: scale() на active-точке, что нам и нужно.
+        const numberEl = this.numberStrip.querySelector(`[data-value="${current}"]`);
+        if (numberEl) {
+            const centerInStrip = numberEl.offsetLeft + numberEl.offsetWidth / 2;
+            return containerCenter - centerInStrip;
+        }
+
+        // Fallback (если элемента нет в DOM-окне)
+        return this.currentStripOffset;
     }
     
-    // Синхронная анимация focus zone и ленты
-    animateFocusZoneAndStrip(stepDurationSec, targetOffset) {
-        if (!this.focusZone || !this.numberStrip) return;
+    // ========== АНИМАЦИЯ КРУГА (независимая) ==========
+    
+    // Анимация только круга (расширение и уменьшение)
+    animateCircle(stepDurationSec) {
+        if (!this.focusZone) return;
         
-        // Находим анимированное кольцо
         const focusCircle = this.focusZone.querySelector('.focus-circle');
         if (!focusCircle) return;
         
-        // Отменяем предыдущие анимации если есть
-        if (this.focusZoneAnimationId) {
-            cancelAnimationFrame(this.focusZoneAnimationId);
-        }
-        if (this.stripAnimationId) {
-            cancelAnimationFrame(this.stripAnimationId);
-        }
+        // Останавливаем предыдущую анимацию круга
+        this.stopCircleAnimation();
         
         const expandDuration = stepDurationSec * 0.9; // 90% времени - увеличение
         const shrinkDuration = stepDurationSec * 0.1; // 10% времени - уменьшение
-        const expandScale = 2.0; // Увеличиваем с 75px до 150px (в 2 раза)
-        
-        // Вычисляем смещения для ленты
-        const startOffset = this.currentStripOffset;
-        const deltaOffset = targetOffset - startOffset;
-        const expandOffset = startOffset + deltaOffset * 0.05; // 5% движения при увеличении
-        const finalOffset = targetOffset; // 100% движения при уменьшении (оставшиеся 95%)
-        
-        const startTime = performance.now();
-        const expandEndTime = startTime + expandDuration * 1000;
-        const totalEndTime = startTime + stepDurationSec * 1000;
-        
-        const animate = (currentTime) => {
-            const elapsed = (currentTime - startTime) / 1000; // в секундах
-            
-            if (currentTime < expandEndTime) {
-                // Фаза увеличения круга (0.9 шага) + плавное движение ленты на 5%
-                const progress = elapsed / expandDuration; // 0..1
-                
-                // Анимация круга
-                const scale = 1 + (expandScale - 1) * progress; // 1.0 -> 2.0
-                focusCircle.style.transform = `scale(${scale})`;
-                
-                // Плавное движение ленты на 5%
-                const stripProgress = progress;
-                const currentStripOffset = startOffset + (expandOffset - startOffset) * stripProgress;
-                this.numberStrip.style.transition = 'none';
-                this.numberStrip.style.transform = `translateX(${currentStripOffset}px)`;
-                this.currentStripOffset = currentStripOffset;
-                
-                this.focusZoneAnimationId = requestAnimationFrame(animate);
-            } else if (currentTime < totalEndTime) {
-                // Фаза уменьшения круга (0.1 шага) + резкое движение ленты на оставшиеся 95%
-                const shrinkProgress = (elapsed - expandDuration) / shrinkDuration; // 0..1
-                
-                // Анимация круга
-                const scale = expandScale - (expandScale - 1) * shrinkProgress; // 2.0 -> 1.0
-                focusCircle.style.transform = `scale(${scale})`;
-                
-                // Резкое движение ленты на оставшиеся 95%
-                const currentStripOffset = expandOffset + (finalOffset - expandOffset) * shrinkProgress;
-                this.numberStrip.style.transition = 'none';
-                this.numberStrip.style.transform = `translateX(${currentStripOffset}px)`;
-                this.currentStripOffset = currentStripOffset;
-                
-                this.focusZoneAnimationId = requestAnimationFrame(animate);
-            } else {
-                // Анимация завершена
-                focusCircle.style.transform = 'scale(1)';
-                this.numberStrip.style.transition = 'none';
-                this.numberStrip.style.transform = `translateX(${finalOffset}px)`;
-                this.currentStripOffset = finalOffset;
-                this.focusZoneAnimationId = null;
-            }
-        };
-        
-        this.focusZoneAnimationId = requestAnimationFrame(animate);
-    }
-    
-    // Анимация focus zone (для обратной совместимости)
-    animateFocusZone(stepDurationSec) {
-        // Используем новую синхронную функцию, но только для круга
-        if (!this.focusZone) return null;
-        
-        const focusCircle = this.focusZone.querySelector('.focus-circle');
-        if (!focusCircle) return null;
-        
-        if (this.focusZoneAnimationId) {
-            cancelAnimationFrame(this.focusZoneAnimationId);
-        }
-        
-        const expandDuration = stepDurationSec * 0.9;
-        const shrinkDuration = stepDurationSec * 0.1;
-        const expandScale = 2.0;
         
         const startTime = performance.now();
         const expandEndTime = startTime + expandDuration * 1000;
@@ -203,41 +158,179 @@ class Renderer {
             const elapsed = (currentTime - startTime) / 1000;
             
             if (currentTime < expandEndTime) {
+                // Фаза увеличения
                 const progress = elapsed / expandDuration;
-                const scale = 1 + (expandScale - 1) * progress;
+                const scale = 1 + (this.circleExpandScale - 1) * progress;
                 focusCircle.style.transform = `scale(${scale})`;
-                this.focusZoneAnimationId = requestAnimationFrame(animate);
+                this.circleAnimationId = requestAnimationFrame(animate);
             } else if (currentTime < totalEndTime) {
+                // Фаза уменьшения
                 const shrinkProgress = (elapsed - expandDuration) / shrinkDuration;
-                const scale = expandScale - (expandScale - 1) * shrinkProgress;
+                const scale = this.circleExpandScale - (this.circleExpandScale - 1) * shrinkProgress;
                 focusCircle.style.transform = `scale(${scale})`;
-                this.focusZoneAnimationId = requestAnimationFrame(animate);
+                this.circleAnimationId = requestAnimationFrame(animate);
             } else {
+                // Анимация завершена
                 focusCircle.style.transform = 'scale(1)';
-                this.focusZoneAnimationId = null;
+                this.circleAnimationId = null;
             }
         };
         
-        this.focusZoneAnimationId = requestAnimationFrame(animate);
-        return shrinkDuration;
+        this.circleAnimationId = requestAnimationFrame(animate);
     }
     
-    // Остановка анимации focus zone и ленты
-    stopFocusZoneAnimation() {
-        if (this.focusZoneAnimationId) {
-            cancelAnimationFrame(this.focusZoneAnimationId);
-            this.focusZoneAnimationId = null;
+    // Остановка анимации круга
+    stopCircleAnimation() {
+        if (this.circleAnimationId) {
+            cancelAnimationFrame(this.circleAnimationId);
+            this.circleAnimationId = null;
         }
-        if (this.stripAnimationId) {
-            cancelAnimationFrame(this.stripAnimationId);
-            this.stripAnimationId = null;
-        }
-        // Возвращаем к базовому размеру
         const focusCircle = this.focusZone?.querySelector('.focus-circle');
         if (focusCircle) {
             focusCircle.style.transform = 'scale(1)';
         }
     }
+    
+    // ========== АНИМАЦИЯ ЛЕНТЫ (независимая) ==========
+    
+    // Анимация только ленты к целевому смещению
+    animateStrip(durationSec, targetOffset, onComplete = null) {
+        if (!this.numberStrip) return;
+        
+        // Останавливаем предыдущую анимацию ленты
+        this.stopStripAnimation();
+        
+        const startOffset = this.currentStripOffset;
+        const deltaOffset = targetOffset - startOffset;
+        
+        const startTime = performance.now();
+        const endTime = startTime + durationSec * 1000;
+        
+        const animate = (currentTime) => {
+            if (currentTime < endTime) {
+                // currentTime в ms, durationSec в секундах
+                const progress = (currentTime - startTime) / (durationSec * 1000);
+                const currentOffset = startOffset + deltaOffset * progress;
+                
+                this.numberStrip.style.transition = 'none';
+                this.numberStrip.style.transform = `translateX(${currentOffset}px)`;
+                this.currentStripOffset = currentOffset;
+                
+                this.stripAnimationId = requestAnimationFrame(animate);
+            } else {
+                // Анимация завершена
+                this.numberStrip.style.transition = 'none';
+                this.numberStrip.style.transform = `translateX(${targetOffset}px)`;
+                this.currentStripOffset = targetOffset;
+                this.stripAnimationId = null;
+                if (typeof onComplete === 'function') onComplete();
+            }
+        };
+        
+        this.stripAnimationId = requestAnimationFrame(animate);
+    }
+    
+    // Остановка анимации ленты
+    stopStripAnimation() {
+        if (this.stripAnimationId) {
+            cancelAnimationFrame(this.stripAnimationId);
+            this.stripAnimationId = null;
+        }
+    }
+    
+    // ========== СИНХРОННАЯ АНИМАЦИЯ (при TICK_STEP) ==========
+
+    // Единая обработка смены шага (auto или manual)
+    // - Лента всегда реально двигается на pitch * deltaSteps в 10% окна
+    // - После движения мы "пересобираем" окно значений вокруг current без визуального скачка (recycle + компенсация translate)
+    // - Круг: только в auto, строго по stepDuration
+    handleStepChange({ current, timer, director, stepDurationSec, isAuto }) {
+        // Инициализация DOM окна
+        this.ensureStripWindowInitialized(current);
+        this.recomputeStripMetrics();
+
+        if (this.stripPitchPx == null) return;
+
+        // Первый вызов: просто центрируемся, без анимации
+        if (this.lastCurrentValue == null) {
+            this.lastCurrentValue = current;
+            this.updateStripPosition(current, null);
+            if (isAuto) this.animateCircleAuto(stepDurationSec);
+            this.updateStripClasses(current, director);
+            return;
+        }
+
+        const deltaSteps = current - this.lastCurrentValue;
+        this.lastCurrentValue = current;
+
+        // Если delta=0 — только обновим классы/опасности и (для авто) круг
+        if (deltaSteps === 0) {
+            this.updateStripClasses(current, director);
+            if (isAuto) this.animateCircleAuto(stepDurationSec);
+            return;
+        }
+
+        // Движение ленты на deltaSteps * pitch за 10% времени шага
+        const moveDuration = stepDurationSec * 0.1;
+        const targetOffset = this.currentStripOffset - deltaSteps * this.stripPitchPx;
+
+        this.animateStrip(moveDuration, targetOffset, () => {
+            // Редко и незаметно двигаем DOM-окно, если current приближается к краю буфера
+            this.maybeRecycleStripWindow(current);
+            // ВАЖНО: после recycle появляются новые элементы → им нужно выставить классы normal/danger
+            this.updateStripClasses(current, director);
+            // Финальный "snap": гарантируем, что CURRENT STEP ровно в центре круга
+            this.updateStripPosition(current, null);
+        });
+
+        if (isAuto) this.animateCircleAuto(stepDurationSec);
+    }
+
+    // Круговой цикл для авто-шага:
+    // - shrink 10% (Smax -> 1)
+    // - expand 90% (1 -> Smax)
+    // НИКОГДА не трогает ленту.
+    animateCircleAuto(stepDurationSec) {
+        if (!this.focusZone) return;
+        const focusCircle = this.focusZone.querySelector('.focus-circle');
+        if (!focusCircle) return;
+
+        this.stopCircleAnimation();
+
+        const shrinkDuration = stepDurationSec * 0.1;
+        const expandDuration = stepDurationSec * 0.9;
+
+        const startTime = performance.now();
+        const shrinkEndTime = startTime + shrinkDuration * 1000;
+        const endTime = startTime + stepDurationSec * 1000;
+
+        // предполагаем, что к моменту авто-шага круг находится в расширенном состоянии
+        focusCircle.style.transform = `scale(${this.circleExpandScale})`;
+
+        const animate = (now) => {
+            if (now < shrinkEndTime) {
+                const p = (now - startTime) / (shrinkDuration * 1000); // 0..1
+                const scale = this.circleExpandScale - (this.circleExpandScale - 1) * p;
+                focusCircle.style.transform = `scale(${scale})`;
+                this.circleAnimationId = requestAnimationFrame(animate);
+                return;
+            }
+
+            if (now < endTime) {
+                const p = (now - shrinkEndTime) / (expandDuration * 1000); // 0..1
+                const scale = 1 + (this.circleExpandScale - 1) * p;
+                focusCircle.style.transform = `scale(${scale})`;
+                this.circleAnimationId = requestAnimationFrame(animate);
+                return;
+            }
+
+            focusCircle.style.transform = `scale(${this.circleExpandScale})`;
+            this.circleAnimationId = null;
+        };
+
+        this.circleAnimationId = requestAnimationFrame(animate);
+    }
+    
 
     // Рендер ленты чисел
     renderNumberStrip(timer, dangerWindows) {
@@ -250,77 +343,156 @@ class Renderer {
         const allDangerWindows = dangerWindows.getAllDangerWindows ? 
             dangerWindows.getAllDangerWindows() : dangerWindows;
         
-        // Определяем нужный диапазон
-        const minValue = Math.max(0, current - range);
-        const maxValue = current + range;
-        
-        // Проверяем, нужно ли пересоздавать элементы
-        // Пересоздаем только если диапазон изменился или элементов нет
+        // Конвейерная лента: DOM окно фиксированной длины и обновляется через shiftStripWindow().
+        // Здесь — только инициализация (если нужно) и обновление классов.
+        this.ensureStripWindowInitialized(current);
+        this.updateStripClasses(current, allDangerWindows);
+    }
+
+    ensureStripWindowInitialized(current) {
         const existingElements = Array.from(this.numberStrip.children);
-        const needsRebuild = existingElements.length === 0 || 
-            existingElements[0]?.dataset.value != minValue ||
-            existingElements[existingElements.length - 1]?.dataset.value != maxValue;
-        
-        if (needsRebuild) {
-            // Очистка
+        if (existingElements.length > 0) return;
+
+        const half = this.stripHalfWindow ?? 30;
+        const minValue = Math.max(0, current - half);
+        const maxValue = minValue + half * 2;
+
             this.numberStrip.innerHTML = '';
-            
-            // Создание кружков вместо чисел
             for (let i = minValue; i <= maxValue; i++) {
                 const circleEl = document.createElement('div');
                 circleEl.className = 'number-circle';
                 circleEl.dataset.value = i;
-                
-                // Проверка на опасность (включая пройденные окна)
-                const isDanger = this.isDangerNumber(i, allDangerWindows);
-                if (isDanger) {
-                    circleEl.classList.add('danger');
-                } else {
-                    circleEl.classList.add('normal');
-                }
-                
-                // Проверка на активность (в центре)
-                if (i === current) {
-                    circleEl.classList.add('active');
-                }
-                
-                this.numberStrip.appendChild(circleEl);
-            }
-            
-            // Устанавливаем начальную позицию сразу (без задержки)
-            // Это нужно для правильного позиционирования при запуске
-            this.updateStripPosition(timer.current, null);
-        } else {
-            // Обновляем только классы существующих элементов (опасность и активность)
-            existingElements.forEach(el => {
-                const value = parseInt(el.dataset.value);
-                
-                // Обновление опасности
-                const isDanger = this.isDangerNumber(value, allDangerWindows);
-                if (isDanger) {
-                    el.classList.remove('normal');
-                    el.classList.add('danger');
-                } else {
-                    el.classList.remove('danger');
-                    el.classList.add('normal');
-                }
-                
-                // Обновление активности
-                if (value === current) {
-                    el.classList.add('active');
-                } else {
-                    el.classList.remove('active');
-                }
-            });
+            this.numberStrip.appendChild(circleEl);
+        }
+        this.stripMinValue = minValue;
+        this.recomputeStripMetrics();
+    }
+
+    // "Подкрутка" окна значений (recycle), чтобы current не упирался в край DOM-буфера.
+    // Делается редко и должна быть визуально незаметной (элементы на краях уже вне поля зрения).
+    maybeRecycleStripWindow(current) {
+        if (!this.numberStrip || this.stripPitchPx == null) return;
+        const count = this.numberStrip.children.length;
+        if (count === 0) return;
+
+        const min = this.stripMinValue ?? parseInt(this.numberStrip.firstElementChild.dataset.value);
+        const max = min + count - 1;
+
+        const margin = this.stripRecycleMargin ?? 10;
+        const leftEdge = min + margin;
+        const rightEdge = max - margin;
+
+        // Если уже упёрлись в 0, влево не рециклим (иначе появляются отрицательные "шаги")
+        if (min === 0 && current <= leftEdge) {
+            return;
+        }
+
+        // Если current слишком близко к правому краю — сдвигаем окно вправо
+        if (current > rightEdge) {
+            const shift = current - (min + (count - 1) / 2);
+            const steps = Math.max(0, Math.floor(shift));
+            this.shiftStripWindowBy(steps);
+            return;
+        }
+
+        // Если current слишком близко к левому краю — сдвигаем окно влево
+        if (current < leftEdge) {
+            const shift = (min + (count - 1) / 2) - current;
+            const steps = Math.max(0, Math.floor(shift));
+            this.shiftStripWindowBy(-steps);
         }
     }
 
+    // Низкоуровневый recycle: сдвигает DOM окно на N шагов и компенсирует translate,
+    // чтобы картинка на экране не "скакнула".
+    shiftStripWindowBy(deltaSteps) {
+        if (!this.numberStrip || deltaSteps === 0) return;
+        const count = this.numberStrip.children.length;
+        if (count === 0) return;
+
+        let min = this.stripMinValue ?? parseInt(this.numberStrip.firstElementChild.dataset.value);
+        let max = min + count - 1;
+
+        // Нельзя уходить в отрицательные значения шагов
+        const requestedSteps = Math.abs(deltaSteps);
+        const steps = deltaSteps < 0 ? Math.min(requestedSteps, Math.max(0, min)) : requestedSteps;
+        if (steps === 0) return;
+        if (deltaSteps > 0) {
+            for (let i = 0; i < steps; i++) {
+                const first = this.numberStrip.firstElementChild;
+                this.numberStrip.removeChild(first);
+                const nextValue = max + 1;
+                const newEl = document.createElement('div');
+                newEl.className = 'number-circle';
+                // По умолчанию делаем точку видимой, дальше updateStripClasses исправит danger/active.
+                newEl.classList.add('normal');
+                newEl.dataset.value = nextValue;
+                this.numberStrip.appendChild(newEl);
+                min += 1;
+                max += 1;
+            }
+            this.currentStripOffset += steps * this.stripPitchPx;
+        } else {
+            for (let i = 0; i < steps; i++) {
+                const last = this.numberStrip.lastElementChild;
+                this.numberStrip.removeChild(last);
+                const prevValue = min - 1;
+                if (prevValue < 0) {
+                    // Дальше влево нельзя
+                    break;
+                }
+                const newEl = document.createElement('div');
+                newEl.className = 'number-circle';
+                newEl.classList.add('normal');
+                newEl.dataset.value = prevValue;
+                this.numberStrip.insertBefore(newEl, this.numberStrip.firstElementChild);
+                min -= 1;
+                max -= 1;
+            }
+            this.currentStripOffset -= steps * this.stripPitchPx;
+        }
+
+        this.stripMinValue = min;
+        this.numberStrip.style.transition = 'none';
+        this.numberStrip.style.transform = `translateX(${this.currentStripOffset}px)`;
+    }
+
+    updateStripClasses(current, allDangerWindows) {
+        const existingElements = Array.from(this.numberStrip.children);
+            existingElements.forEach(el => {
+                const value = parseInt(el.dataset.value);
+
+                // Пройденные шаги (позади текущего) — подсвечиваем зелёным
+                const isPassed = value < current;
+                if (isPassed) {
+                    el.classList.add('passed');
+                    // Фон "passed" должен доминировать, поэтому убираем базовые normal/danger
+                    el.classList.remove('normal');
+                    el.classList.remove('danger');
+                } else {
+                    el.classList.remove('passed');
+
+                    const isDanger = this.isDangerNumber(value, allDangerWindows);
+                    if (isDanger) {
+                        el.classList.remove('normal');
+                        el.classList.add('danger');
+                    } else {
+                        el.classList.remove('danger');
+                        el.classList.add('normal');
+                    }
+                }
+
+            if (value === current) el.classList.add('active');
+            else el.classList.remove('active');
+        });
+    }
+
     // Обновление позиции ленты (мгновенное, без анимации)
+    // Используется только при инициализации, не останавливает анимации
     updateStripPosition(current, stepDuration = null) {
         if (!this.numberStrip) return;
         
         // Принудительно заставляем браузер пересчитать layout
-        // чтобы getBoundingClientRect() вернул актуальные значения
         void this.numberStrip.offsetHeight;
         
         const targetOffset = this.calculateTargetOffset(current);
@@ -330,11 +502,31 @@ class Renderer {
         this.numberStrip.style.transition = 'none';
         this.numberStrip.style.transform = `translateX(${targetOffset}px)`;
     }
+
+    // Пересчет метрик ленты для аналитического расчета оффсета
+    recomputeStripMetrics() {
+        if (!this.numberStrip) return;
+        const first = this.numberStrip.querySelector('.number-circle');
+        if (!first) return;
+
+        const style = window.getComputedStyle(first);
+        const width = parseFloat(style.width) || 40;
+        const marginLeft = parseFloat(style.marginLeft) || 0;
+        const marginRight = parseFloat(style.marginRight) || 0;
+
+        this.stripPitchPx = width + marginLeft + marginRight;
+        this.stripFirstCenterPx = marginLeft + width / 2;
+    }
     
 
     // Проверка, является ли число опасным
     isDangerNumber(value, dangerWindows) {
-        for (const window of dangerWindows) {
+        // Нормализация: dangerWindows может быть Director, массивом или null
+        const windows = (dangerWindows && typeof dangerWindows.getAllDangerWindows === 'function')
+            ? dangerWindows.getAllDangerWindows()
+            : (Array.isArray(dangerWindows) ? dangerWindows : []);
+
+        for (const window of windows) {
             if (value >= window.start && value < window.start + window.length) {
                 return true;
             }
@@ -344,13 +536,7 @@ class Renderer {
 
     // Рендер кнопок управления
     renderControlButtons(buttons) {
-        if (!this.controlButtons) {
-            console.error('controlButtons element not found!');
-            return;
-        }
-        
-        if (!buttons || buttons.length === 0) {
-            console.warn('No buttons to render');
+        if (!this.controlButtons || !buttons || buttons.length === 0) {
             return;
         }
         
@@ -467,19 +653,37 @@ class Renderer {
 
     // Обновление UI
     updateUI(state) {
-        // Score
-        const currentScoreEl = document.getElementById('current-score');
+        const scoreValueEl = document.getElementById('score-value');
         const bestScoreEl = document.getElementById('best-score');
-        const streakEl = document.getElementById('streak-count');
-        
-        if (currentScoreEl) {
-            currentScoreEl.textContent = Math.floor(state.timer.maxReached);
+        const streakFillEl = document.getElementById('streak-fill');
+        const streakTextEl = document.getElementById('streak-text');
+        const slowdownBtn = document.getElementById('slowdown-btn');
+        const soundBtn = document.getElementById('sound-btn');
+
+        const score = Math.floor(state?.timer?.maxReached ?? 0);
+        const best = Math.floor(state?.bestScore ?? 0);
+        const streak = Math.max(0, Math.min(50, Math.floor(state?.streakPoints ?? state?.dangerPassedStreak ?? 0)));
+
+        if (scoreValueEl) scoreValueEl.textContent = score;
+        if (bestScoreEl) bestScoreEl.textContent = best;
+
+        if (streakFillEl) {
+            streakFillEl.style.width = `${(streak / 50) * 100}%`;
         }
-        if (bestScoreEl) {
-            bestScoreEl.textContent = Math.floor(state.bestScore);
+        if (streakTextEl) {
+            streakTextEl.textContent = `${streak}/50`;
         }
-        if (streakEl) {
-            streakEl.textContent = state.dangerPassedStreak;
+
+        // Slow down button state
+        if (slowdownBtn) {
+            const canUse = state?.gameStatus === 'RUNNING' && streak >= 10;
+            slowdownBtn.disabled = !canUse;
+            slowdownBtn.classList.toggle('ready', canUse);
+        }
+
+        // Sound icon state
+        if (soundBtn) {
+            soundBtn.textContent = state?.soundMuted ? '🔇' : '🔊';
         }
     }
 
@@ -512,11 +716,7 @@ class Renderer {
             finalScoreEl.textContent = `Score: ${Math.floor(score)}`;
         }
         if (continueBtn) {
-            if (canContinue) {
-                continueBtn.classList.remove('hidden');
-            } else {
-                continueBtn.classList.add('hidden');
-            }
+            continueBtn.disabled = !canContinue;
         }
     }
 

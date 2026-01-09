@@ -49,6 +49,20 @@ class Renderer {
         this.setupDebugOverlay();
     }
 
+    // В debug-режиме показываем числа прямо на кружках, чтобы легче отлаживать "ленту"
+    applyDebugLabelToCircle(circleEl) {
+        if (!circleEl) return;
+        if (this.debug) {
+            circleEl.classList.add('debug-number');
+            const v = circleEl.dataset?.value;
+            circleEl.textContent = (v == null ? '' : String(v));
+        } else {
+            circleEl.classList.remove('debug-number');
+            // Не трогаем текст, если не мы его ставили — но у нас сейчас кружки без контента.
+            circleEl.textContent = '';
+        }
+    }
+
     setupDebugOverlay() {
         if (!this.debug) return;
         const container = document.getElementById('game-area');
@@ -281,14 +295,10 @@ class Renderer {
             anchorX: this.getFocusAnchorX(container)
         });
 
-        // Коллизия = левый край danger дошёл до правой границы головы
-        if (dangerLeftX <= biteX) {
-            if (this._deathTriggeredForStart !== firstDangerValue) {
-                this._deathTriggered = true;
-                this._deathTriggeredForStart = firstDangerValue;
-                eventBus.emit('PENGUIN_DANGER_COLLISION', { dangerStart: firstDangerValue });
-            }
-        }
+        // NOTE:
+        // Раньше здесь была DOM-коллизия (danger дошёл до линии укуса) и мы эмитили game over отсюда.
+        // Сейчас game over считается логически в Game.onTickStep() через Director.dangerWindows,
+        // чтобы поведение не зависело от прерванных анимаций/DOM-состояния.
     }
 
     setupEventListeners() {
@@ -502,7 +512,7 @@ class Renderer {
             this.updateStripClasses(current, director);
             this.checkPenguinDangerCollision(director);
             // Пока: "кусаем" на каждом шаге, чтобы визуально проверить работу анимации
-            this.triggerBite('small');
+            if (isAuto) this.triggerBite('small');
             return;
         }
 
@@ -517,9 +527,19 @@ class Renderer {
             return;
         }
 
-        // Движение ленты на deltaSteps * pitch за 30% времени шага
+        // ВАЖНО: если пришёл новый step-change во время движения ленты,
+        // старая анимация будет отменена (animateStrip -> stopStripAnimation),
+        // и её onComplete не выполнится. Поэтому перед новым движением
+        // приводим DOM-окно/классы в консистентное состояние под новый current.
+        this.maybeRecycleStripWindow(current);
+        this.updateStripClasses(current, director);
+
+        // Движение ленты к АБСОЛЮТНОМУ оффсету под current за 30% времени шага
         const moveDuration = stepDurationSec * 0.3;
-        const targetOffset = this.currentStripOffset - deltaSteps * this.stripPitchPx;
+        const targetOffset = this.calculateTargetOffset(current);
+
+        // Укус должен совпадать со СТАРТОМ перемотки (как и при ручном SHIFT_USED)
+        if (isAuto) this.triggerBite('small', moveDuration);
 
         this.animateStrip(moveDuration, targetOffset, () => {
             // Редко и незаметно двигаем DOM-окно, если current приближается к краю буфера
@@ -529,8 +549,6 @@ class Renderer {
             // Финальный "snap": гарантируем, что CURRENT STEP ровно в центре круга
             this.updateStripPosition(current, null);
             this.checkPenguinDangerCollision(director);
-            // Пока: small-bite на конце каждого смещения ленты
-            this.triggerBite('small', moveDuration);
         });
 
         if (isAuto) this.animateCircleAuto(stepDurationSec);
@@ -614,6 +632,7 @@ class Renderer {
                 const circleEl = document.createElement('div');
                 circleEl.className = 'number-circle';
                 circleEl.dataset.value = i;
+                this.applyDebugLabelToCircle(circleEl);
             this.numberStrip.appendChild(circleEl);
         }
         this.stripMinValue = minValue;
@@ -679,6 +698,7 @@ class Renderer {
                 // По умолчанию делаем точку видимой, дальше updateStripClasses исправит danger/active.
                 newEl.classList.add('normal');
                 newEl.dataset.value = nextValue;
+                this.applyDebugLabelToCircle(newEl);
                 this.numberStrip.appendChild(newEl);
                 min += 1;
                 max += 1;
@@ -697,6 +717,7 @@ class Renderer {
                 newEl.className = 'number-circle';
                 newEl.classList.add('normal');
                 newEl.dataset.value = prevValue;
+                this.applyDebugLabelToCircle(newEl);
                 this.numberStrip.insertBefore(newEl, this.numberStrip.firstElementChild);
                 min -= 1;
                 max -= 1;

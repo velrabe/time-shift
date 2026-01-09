@@ -17,6 +17,12 @@ class Game {
         
         this.animationFrameId = null;
         this.lastUpdateTime = 0;
+
+        // Защита от раннего клика PLAY и от повторных стартов.
+        this.isInitialized = false;
+        this.pendingStart = false;
+        this.startInProgress = false;
+        this._initPromise = null;
         
         // Убеждаемся, что игра не запущена
         this.state = 'MENU';
@@ -26,6 +32,10 @@ class Game {
 
     // Инициализация
     async init() {
+        // Инициализируемся строго один раз (на случай повторного вызова извне).
+        if (this._initPromise) return this._initPromise;
+
+        this._initPromise = (async () => {
         // Инициализация GamePush
         await this.gamePush.init();
         
@@ -52,6 +62,18 @@ class Game {
         
         // Обновление UI
         this.updateUI();
+
+        this.isInitialized = true;
+
+        // Если пользователь нажал PLAY до завершения init(), запускаем игру сейчас.
+        if (this.pendingStart) {
+            this.pendingStart = false;
+            // Не await'им, чтобы не блокировать внешний init(), но start() сам async/guarded.
+            this.start();
+        }
+        })();
+
+        return this._initPromise;
     }
 
     // Настройка обработчиков событий
@@ -205,14 +227,28 @@ class Game {
 
     // Запуск игры
     async start() {
-        // Скрываем стартовый экран
-        this.renderer.hideStartScreen();
-        
-        this.state = 'COUNTDOWN';
-        this.timer.reset();
-        this.director = new Director();
-        this.perks.reset();
-        this.audio.reset();
+        // Нельзя стартовать до завершения init(): иначе позже init() может "догрузиться"
+        // и перерисовать меню поверх игры, а также запустить повторный start.
+        if (!this.isInitialized) {
+            this.pendingStart = true;
+            return;
+        }
+
+        // Старт возможен только из меню. Любые повторные клики во время countdown/running игнорируем.
+        if (this.state !== 'MENU') return;
+
+        // Доп. защита от двойного старта (например, два события клика подряд).
+        if (this.startInProgress) return;
+        this.startInProgress = true;
+        try {
+            // Скрываем стартовый экран
+            this.renderer.hideStartScreen();
+            
+            this.state = 'COUNTDOWN';
+            this.timer.reset();
+            this.director = new Director();
+            this.perks.reset();
+            this.audio.reset();
 
         // ВАЖНО: при новой игре пересоздаем DOM-окно ленты,
         // иначе там остаются значения из прошлой сессии и current=0 не центрируется до первого шага.
@@ -272,8 +308,11 @@ class Game {
             
         });
         
-        // Запуск игрового цикла
-        this.gameLoop();
+            // Запуск игрового цикла
+            this.gameLoop();
+        } finally {
+            this.startInProgress = false;
+        }
     }
 
     // Игровой цикл
@@ -370,7 +409,31 @@ class Game {
 
     // Обработка шага таймера
     onTickStep(data) {
-        // начисление streak за passed danger zone теперь делается в Director.update()
+        // Начисление streak за passed danger zone теперь делается в Director.update()
+        // Game over: должен триггериться НЕ при входе в danger, а когда шаг ПОКИДАЕТ danger-зону у рта.
+        // Технически: на TICK_STEP "предыдущий current" (prev) уходит влево из зоны укуса, а новый current приходит.
+        // Если prev был danger — значит игрок не успел решить/перемотать до конца тика.
+        if (this.state !== 'RUNNING') return;
+        if (!this.director || !Array.isArray(this.director.dangerWindows)) return;
+        if (!this.timer) return;
+
+        const dir = (typeof this.timer.direction === 'number') ? this.timer.direction : 1;
+        // Смерть считаем только на авто-шагаx вперед (иначе перемотка назад/инверсия будет неожиданной).
+        if (dir !== 1) return;
+
+        const current = (data && typeof data.current === 'number') ? data.current : this.timer.current;
+        const prev = current - 1;
+        if (prev < 0) return;
+
+        const w = this.director.dangerWindows.find(win => {
+            if (!win || typeof win.start !== 'number' || typeof win.length !== 'number') return false;
+            const end = win.start + win.length - 1;
+            return prev >= win.start && prev <= end;
+        });
+
+        if (w) {
+            this.gameOver({ reason: 'DANGER_LEFT_BITE_ZONE', dangerStart: w.start });
+        }
     }
 
     // Обработка использования сдвига

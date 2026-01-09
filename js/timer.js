@@ -87,6 +87,15 @@ class Timer {
         if (this.current > this.maxReached) {
             this.maxReached = this.current;
         }
+
+        // ВАЖНО: при ручном сдвиге "текущий шаг" меняется мгновенно,
+        // поэтому нужно обнулить таймер шага, иначе следующий auto-step
+        // может сработать раньше (донаследует elapsed от прошлого шага).
+        // Ставим 0, чтобы следующий update() заново инициализировал старт тика
+        // и гарантированно дал "полный тик на подумать" после перемотки.
+        this.lastStepTime = 0;
+        // Обновим значение длительности шага, чтобы UI/анимации брали актуальную скорость.
+        this.stepDurationSec = this.calculateStepDuration();
         
         eventBus.emit('SHIFT_USED', { 
             delta, 

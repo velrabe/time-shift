@@ -25,10 +25,158 @@ class Renderer {
         this.stripRange = 15;          // "полезный" радиус вокруг current
         this.stripHalfWindow = 30;     // фактический DOM-буфер (2*30+1 = 61 точка)
         this.stripRecycleMargin = 10;  // насколько близко к краям допускаем current перед recycle
+
+        // Коллизия "опасность касается головы" (триггер гейм-овера)
+        this._deathTriggered = false;
+        this._deathTriggeredForStart = null;
+
+        // Debug overlay
+        this.debug = (() => {
+            try {
+                const qs = new URLSearchParams(window.location.search);
+                return qs.has('debug') || qs.get('debug') === '1';
+            } catch (e) {
+                return false;
+            }
+        })();
+        this.biteOffsetX = 0; // px: можно калибровать "точку укуса" (положительное = вправо, отрицательное = влево)
+        this.debugEls = null;
+        this._lastBiteAt = 0;
         
         this.setupFocusZone();
         this.setupEventListeners();
         this.setupFocusZoneAnimation();
+        this.setupDebugOverlay();
+    }
+
+    setupDebugOverlay() {
+        if (!this.debug) return;
+        const container = document.getElementById('game-area');
+        if (!container) return;
+        // не дублируем, если уже есть
+        let overlay = container.querySelector('#debug-overlay');
+        if (!overlay) {
+            overlay = document.createElement('div');
+            overlay.id = 'debug-overlay';
+            container.appendChild(overlay);
+        }
+
+        const ensure = (id, className) => {
+            let el = overlay.querySelector(`#${id}`);
+            if (!el) {
+                el = document.createElement('div');
+                el.id = id;
+                el.className = className;
+                overlay.appendChild(el);
+            }
+            return el;
+        };
+
+        this.debugEls = {
+            overlay,
+            penguinBox: ensure('debug-penguin-box', 'debug-box debug-penguin'),
+            jawTopBox: ensure('debug-jaw-top-box', 'debug-box debug-jaw-top'),
+            jawBotBox: ensure('debug-jaw-bot-box', 'debug-box debug-jaw-bot'),
+            dangerBox: ensure('debug-danger-box', 'debug-box debug-danger'),
+            biteLine: ensure('debug-bite-line', 'debug-line debug-bite'),
+            anchorLine: ensure('debug-anchor-line', 'debug-line debug-anchor')
+        };
+    }
+
+    updateDebugOverlay({ containerRect, penguinRect, jawTopRect, jawBotRect, dangerRect, biteX, anchorX }) {
+        if (!this.debug || !this.debugEls) return;
+        const { penguinBox, jawTopBox, jawBotBox, dangerBox, biteLine, anchorLine } = this.debugEls;
+
+        const placeBox = (box, rect) => {
+            if (!rect) {
+                box.style.display = 'none';
+                return;
+            }
+            box.style.display = 'block';
+            box.style.left = `${rect.left - containerRect.left}px`;
+            box.style.top = `${rect.top - containerRect.top}px`;
+            box.style.width = `${rect.width}px`;
+            box.style.height = `${rect.height}px`;
+        };
+
+        const placeLine = (line, x) => {
+            if (typeof x !== 'number' || !Number.isFinite(x)) {
+                line.style.display = 'none';
+                return;
+            }
+            line.style.display = 'block';
+            line.style.left = `${x}px`;
+            line.style.top = `0px`;
+            line.style.height = `${containerRect.height}px`;
+        };
+
+        placeBox(penguinBox, penguinRect);
+        placeBox(jawTopBox, jawTopRect);
+        placeBox(jawBotBox, jawBotRect);
+        placeBox(dangerBox, dangerRect);
+        placeLine(biteLine, biteX);
+        placeLine(anchorLine, anchorX);
+    }
+
+    getPenguinParts() {
+        const root = this.focusZone?.querySelector('#penguin-root') || this.focusZone?.querySelector('.penguin');
+        if (!root) return null;
+        const head = root.querySelector('#penguin-head') || root.querySelector('.penguin-head');
+        const topJaw = root.querySelector('#penguin-top-jaw') || root.querySelector('.penguin-jaw--top');
+        const botJaw = root.querySelector('#penguin-bot-jaw') || root.querySelector('.penguin-jaw--bot');
+        return { root, head, topJaw, botJaw };
+    }
+
+    // Правая граница "рта" = max(right) верхней/нижней челюсти. Fallback: правая граница контейнера пингвина.
+    getPenguinMouthRightX(containerEl) {
+        if (!containerEl) return 0;
+        const containerRect = containerEl.getBoundingClientRect();
+        const parts = this.getPenguinParts();
+        if (!parts) return 0;
+
+        const topRect = parts.topJaw?.getBoundingClientRect?.();
+        const botRect = parts.botJaw?.getBoundingClientRect?.();
+        const rootRect = parts.root?.getBoundingClientRect?.();
+
+        let right = null;
+        if (topRect) right = right == null ? topRect.right : Math.max(right, topRect.right);
+        if (botRect) right = right == null ? botRect.right : Math.max(right, botRect.right);
+        if (right == null && rootRect) right = rootRect.right;
+        if (right == null) return 0;
+
+        return (right - containerRect.left) + (this.biteOffsetX || 0);
+    }
+
+    triggerBite(kind = 'small', durationSec = null) {
+        const parts = this.getPenguinParts();
+        if (!parts?.root) return;
+        const now = performance.now();
+        // Don't block "big bite" (user action) with debounce from frequent small bites
+        if (kind !== 'big') {
+            if (now - (this._lastBiteAt || 0) < 70) return; // debounce
+            this._lastBiteAt = now;
+        }
+        if (typeof durationSec === 'number' && Number.isFinite(durationSec) && durationSec > 0) {
+            parts.root.style.setProperty('--bite-ms', `${Math.round(durationSec * 1000)}ms`);
+        } else {
+            parts.root.style.removeProperty('--bite-ms');
+        }
+        const cls = kind === 'big' ? 'bite-big' : 'bite-small';
+        parts.root.classList.remove('bite-small', 'bite-big');
+        // force reflow to restart animation
+        void parts.root.offsetHeight;
+        parts.root.classList.add(cls);
+        const msFromCss = (() => {
+            const v = getComputedStyle(parts.root).getPropertyValue('--bite-ms').trim();
+            if (!v) return null;
+            const m = v.match(/^(\d+(?:\.\d+)?)ms$/);
+            if (!m) return null;
+            return Math.max(1, Math.round(parseFloat(m[1])));
+        })();
+        const ms = msFromCss ?? (kind === 'big' ? 200 : 160);
+        window.setTimeout(() => {
+            parts.root?.classList?.remove(cls);
+        }, ms);
     }
 
     // Полный сброс DOM-окна ленты (нужно при старте новой игры, чтобы current=0 центрировался сразу)
@@ -43,14 +191,104 @@ class Renderer {
         this.currentStripOffset = 0;
         this.numberStrip.style.transition = 'none';
         this.numberStrip.style.transform = `translateX(0px)`;
+        this._deathTriggered = false;
+        this._deathTriggeredForStart = null;
     }
 
     setupFocusZone() {
         // Вычисляем центр экрана
         const container = document.getElementById('game-area');
-        this.focusZoneCenter = container.offsetWidth / 2;
+        // Центр привязки теперь — центр focus-zone (он может быть смещён влево через CSS)
+        this.focusZoneCenter = this.getFocusAnchorX(container);
         // При ресайзе могут поменяться размеры кружков/маргины (responsive) — пересчитываем метрики
         this.recomputeStripMetrics();
+    }
+
+    // X-координата "якоря" (куда нужно выравнивать текущий шаг ленты).
+    // По умолчанию это центр focus-zone; fallback — центр game-area.
+    getFocusAnchorX(containerEl) {
+        if (!containerEl) return 0;
+        try {
+            // Хотим, чтобы "активный" кружок был сразу СПРАВА от "рта" (правой границы челюстей):
+            // anchorX = mouthRightX + radius(circle)
+            const circleEl = this.numberStrip?.querySelector('.number-circle');
+            const circleWidth = circleEl?.offsetWidth || 42;
+            const circleRadius = circleWidth / 2;
+            const mouthRightX = this.getPenguinMouthRightX(containerEl);
+            if (mouthRightX > 0) return mouthRightX + circleRadius;
+
+            const focusRect = this.focusZone?.getBoundingClientRect();
+            if (focusRect) return (focusRect.left - containerRect.left) + (focusRect.width / 2);
+        } catch (e) {
+            // noop: fallback below
+        }
+        return containerEl.offsetWidth / 2;
+    }
+
+    // Проверка коллизии: левая граница ближайшей danger-точки коснулась правой границы головы.
+    // Эмитим событие один раз на окно (по его start-значению).
+    checkPenguinDangerCollision(director) {
+        if (this._deathTriggered) return;
+        const container = document.getElementById('game-area');
+        if (!container || !this.focusZone || !this.numberStrip) return;
+
+        const parts = this.getPenguinParts();
+        if (!parts?.root) return;
+
+        const containerRect = container.getBoundingClientRect();
+        const penguinRect = parts.root.getBoundingClientRect();
+        const jawTopRect = parts.topJaw?.getBoundingClientRect?.() || null;
+        const jawBotRect = parts.botJaw?.getBoundingClientRect?.() || null;
+        const biteX = this.getPenguinMouthRightX(container);
+
+        // Находим ближайшую danger-точку (минимальный data-value среди .danger)
+        const dangerEls = Array.from(this.numberStrip.querySelectorAll('.number-circle.danger'));
+        if (dangerEls.length === 0) {
+            // все равно обновим дебаг (только пингвин/линия укуса)
+            this.updateDebugOverlay({
+                containerRect,
+                penguinRect,
+                jawTopRect,
+                jawBotRect,
+                dangerRect: null,
+                biteX,
+                anchorX: this.getFocusAnchorX(container)
+            });
+            return;
+        }
+
+        let firstDangerEl = null;
+        let firstDangerValue = Infinity;
+        for (const el of dangerEls) {
+            const v = parseInt(el.dataset.value);
+            if (Number.isFinite(v) && v < firstDangerValue) {
+                firstDangerValue = v;
+                firstDangerEl = el;
+            }
+        }
+        if (!firstDangerEl || !Number.isFinite(firstDangerValue)) return;
+
+        const dangerRect = firstDangerEl.getBoundingClientRect();
+        const dangerLeftX = dangerRect.left - containerRect.left;
+
+        this.updateDebugOverlay({
+            containerRect,
+            penguinRect,
+            jawTopRect,
+            jawBotRect,
+            dangerRect,
+            biteX,
+            anchorX: this.getFocusAnchorX(container)
+        });
+
+        // Коллизия = левый край danger дошёл до правой границы головы
+        if (dangerLeftX <= biteX) {
+            if (this._deathTriggeredForStart !== firstDangerValue) {
+                this._deathTriggered = true;
+                this._deathTriggeredForStart = firstDangerValue;
+                eventBus.emit('PENGUIN_DANGER_COLLISION', { dangerStart: firstDangerValue });
+            }
+        }
     }
 
     setupEventListeners() {
@@ -83,6 +321,8 @@ class Renderer {
                 // Только анимируем ленту к новому current
                 
                 const director = window.gameInstance?.director || null;
+                // Big bite should play on user-initiated shift
+                this.triggerBite('big', data.timer.calculateStepDuration() * 0.3);
                 this.handleStepChange({
                     current: data.current,
                     timer: data.timer,
@@ -106,11 +346,11 @@ class Renderer {
     }
     
     setupFocusZoneAnimation() {
-        // Получаем базовый размер круга из CSS (анимированного кольца)
-        const focusCircle = this.focusZone?.querySelector('.focus-circle');
-        if (focusCircle) {
-            const computedStyle = window.getComputedStyle(focusCircle);
-            this.focusZoneBaseSize = parseInt(computedStyle.width) || 75;
+        // Получаем базовый размер индикатора из CSS (теперь это пингвин)
+        const indicator = this.focusZone?.querySelector('#penguin-head') || this.focusZone?.querySelector('.focus-penguin');
+        if (indicator) {
+            const computedStyle = window.getComputedStyle(indicator);
+            this.focusZoneBaseSize = parseInt(computedStyle.width) || 140;
         }
     }
     
@@ -121,14 +361,14 @@ class Renderer {
         const container = document.getElementById('game-area');
         if (!container) return this.currentStripOffset;
         
-        const containerCenter = container.offsetWidth / 2;
+        const anchorX = this.getFocusAnchorX(container);
 
         // Точный расчет через layout-координаты (НЕ зависит от translateX ленты)
         // offsetLeft/offsetWidth не учитывают transform: scale() на active-точке, что нам и нужно.
         const numberEl = this.numberStrip.querySelector(`[data-value="${current}"]`);
         if (numberEl) {
             const centerInStrip = numberEl.offsetLeft + numberEl.offsetWidth / 2;
-            return containerCenter - centerInStrip;
+            return anchorX - centerInStrip;
         }
 
         // Fallback (если элемента нет в DOM-окне)
@@ -141,8 +381,11 @@ class Renderer {
     animateCircle(stepDurationSec) {
         if (!this.focusZone) return;
         
-        const focusCircle = this.focusZone.querySelector('.focus-circle');
-        if (!focusCircle) return;
+        const indicator = this.focusZone.querySelector('#penguin-head') || this.focusZone.querySelector('.focus-penguin');
+        if (!indicator) return;
+
+        // Пока фиксируем индикатор статичным (позже добавим отдельную анимацию для пингвина)
+        return;
         
         // Останавливаем предыдущую анимацию круга
         this.stopCircleAnimation();
@@ -161,17 +404,17 @@ class Renderer {
                 // Фаза увеличения
                 const progress = elapsed / expandDuration;
                 const scale = 1 + (this.circleExpandScale - 1) * progress;
-                focusCircle.style.transform = `scale(${scale})`;
+                indicator.style.transform = `scale(${scale})`;
                 this.circleAnimationId = requestAnimationFrame(animate);
             } else if (currentTime < totalEndTime) {
                 // Фаза уменьшения
                 const shrinkProgress = (elapsed - expandDuration) / shrinkDuration;
                 const scale = this.circleExpandScale - (this.circleExpandScale - 1) * shrinkProgress;
-                focusCircle.style.transform = `scale(${scale})`;
+                indicator.style.transform = `scale(${scale})`;
                 this.circleAnimationId = requestAnimationFrame(animate);
             } else {
                 // Анимация завершена
-                focusCircle.style.transform = 'scale(1)';
+                indicator.style.transform = 'scale(1)';
                 this.circleAnimationId = null;
             }
         };
@@ -185,9 +428,9 @@ class Renderer {
             cancelAnimationFrame(this.circleAnimationId);
             this.circleAnimationId = null;
         }
-        const focusCircle = this.focusZone?.querySelector('.focus-circle');
-        if (focusCircle) {
-            focusCircle.style.transform = 'scale(1)';
+        const indicator = this.focusZone?.querySelector('#penguin-head') || this.focusZone?.querySelector('.focus-penguin');
+        if (indicator) {
+            indicator.style.transform = 'scale(1)';
         }
     }
     
@@ -241,7 +484,7 @@ class Renderer {
     // ========== СИНХРОННАЯ АНИМАЦИЯ (при TICK_STEP) ==========
 
     // Единая обработка смены шага (auto или manual)
-    // - Лента всегда реально двигается на pitch * deltaSteps в 10% окна
+    // - Лента всегда реально двигается на pitch * deltaSteps в 30% окна
     // - После движения мы "пересобираем" окно значений вокруг current без визуального скачка (recycle + компенсация translate)
     // - Круг: только в auto, строго по stepDuration
     handleStepChange({ current, timer, director, stepDurationSec, isAuto }) {
@@ -257,6 +500,9 @@ class Renderer {
             this.updateStripPosition(current, null);
             if (isAuto) this.animateCircleAuto(stepDurationSec);
             this.updateStripClasses(current, director);
+            this.checkPenguinDangerCollision(director);
+            // Пока: "кусаем" на каждом шаге, чтобы визуально проверить работу анимации
+            this.triggerBite('small');
             return;
         }
 
@@ -267,11 +513,12 @@ class Renderer {
         if (deltaSteps === 0) {
             this.updateStripClasses(current, director);
             if (isAuto) this.animateCircleAuto(stepDurationSec);
+            this.checkPenguinDangerCollision(director);
             return;
         }
 
-        // Движение ленты на deltaSteps * pitch за 10% времени шага
-        const moveDuration = stepDurationSec * 0.1;
+        // Движение ленты на deltaSteps * pitch за 30% времени шага
+        const moveDuration = stepDurationSec * 0.3;
         const targetOffset = this.currentStripOffset - deltaSteps * this.stripPitchPx;
 
         this.animateStrip(moveDuration, targetOffset, () => {
@@ -281,6 +528,9 @@ class Renderer {
             this.updateStripClasses(current, director);
             // Финальный "snap": гарантируем, что CURRENT STEP ровно в центре круга
             this.updateStripPosition(current, null);
+            this.checkPenguinDangerCollision(director);
+            // Пока: small-bite на конце каждого смещения ленты
+            this.triggerBite('small', moveDuration);
         });
 
         if (isAuto) this.animateCircleAuto(stepDurationSec);
@@ -292,10 +542,12 @@ class Renderer {
     // НИКОГДА не трогает ленту.
     animateCircleAuto(stepDurationSec) {
         if (!this.focusZone) return;
-        const focusCircle = this.focusZone.querySelector('.focus-circle');
-        if (!focusCircle) return;
+        const indicator = this.focusZone.querySelector('#penguin-head') || this.focusZone.querySelector('.focus-penguin');
+        if (!indicator) return;
 
+        // Пока фиксируем индикатор статичным (позже добавим отдельную анимацию для пингвина)
         this.stopCircleAnimation();
+        return;
 
         const shrinkDuration = stepDurationSec * 0.1;
         const expandDuration = stepDurationSec * 0.9;
@@ -305,13 +557,13 @@ class Renderer {
         const endTime = startTime + stepDurationSec * 1000;
 
         // предполагаем, что к моменту авто-шага круг находится в расширенном состоянии
-        focusCircle.style.transform = `scale(${this.circleExpandScale})`;
+        indicator.style.transform = `scale(${this.circleExpandScale})`;
 
         const animate = (now) => {
             if (now < shrinkEndTime) {
                 const p = (now - startTime) / (shrinkDuration * 1000); // 0..1
                 const scale = this.circleExpandScale - (this.circleExpandScale - 1) * p;
-                focusCircle.style.transform = `scale(${scale})`;
+                indicator.style.transform = `scale(${scale})`;
                 this.circleAnimationId = requestAnimationFrame(animate);
                 return;
             }
@@ -319,12 +571,12 @@ class Renderer {
             if (now < endTime) {
                 const p = (now - shrinkEndTime) / (expandDuration * 1000); // 0..1
                 const scale = 1 + (this.circleExpandScale - 1) * p;
-                focusCircle.style.transform = `scale(${scale})`;
+                indicator.style.transform = `scale(${scale})`;
                 this.circleAnimationId = requestAnimationFrame(animate);
                 return;
             }
 
-            focusCircle.style.transform = `scale(${this.circleExpandScale})`;
+            indicator.style.transform = `scale(${this.circleExpandScale})`;
             this.circleAnimationId = null;
         };
 
@@ -683,7 +935,8 @@ class Renderer {
 
         // Sound icon state
         if (soundBtn) {
-            soundBtn.textContent = state?.soundMuted ? '🔇' : '🔊';
+            // Keep UI consistent with reference-style (no emoji)
+            soundBtn.textContent = state?.soundMuted ? 'MUT' : 'SND';
         }
     }
 
@@ -741,13 +994,14 @@ class Renderer {
             countdownText.textContent = i;
             countdownText.style.animation = 'none';
             setTimeout(() => {
-                countdownText.style.animation = 'countdownPulse 1s ease-in-out';
+                // 10x faster countdown (was 1s per tick)
+                countdownText.style.animation = 'countdownPulse 0.1s ease-in-out';
             }, 10);
-            await new Promise(resolve => setTimeout(resolve, 1000));
+            await new Promise(resolve => setTimeout(resolve, 100));
         }
         
         countdownText.textContent = 'GO!';
-        await new Promise(resolve => setTimeout(resolve, 500));
+        await new Promise(resolve => setTimeout(resolve, 50));
         
         countdownOverlay.classList.add('hidden');
     }

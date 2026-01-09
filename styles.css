@@ -4,13 +4,23 @@
     box-sizing: border-box;
 }
 
+:root {
+    /* Layout tuning */
+    --circle-size: 42px;
+    --lane-shift-y: calc(var(--circle-size) * 0.25); /* quarter of circle height */
+}
+
 body {
-    font-family: 'Arial', sans-serif;
-    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-    color: #fff;
+    /* Reference-style: playful glossy UI */
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Trebuchet MS", Arial, sans-serif;
+    background: #4ea2ff;
+    color: #0b0f18;
     overflow: hidden;
     height: 100vh;
     user-select: none;
+    font-variant-numeric: tabular-nums;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
 }
 
 #game-container {
@@ -19,6 +29,7 @@ body {
     position: relative;
     display: flex;
     flex-direction: column;
+    background: transparent;
 }
 
 /* UI Overlay */
@@ -34,9 +45,9 @@ body {
 /* New HUD */
 #hud {
     position: absolute;
-    top: 16px;
-    left: 16px;
-    right: 16px;
+    top: 18px;
+    left: 18px;
+    right: 18px;
     pointer-events: none;
 }
 
@@ -52,23 +63,25 @@ body {
     display: flex;
     flex-direction: column;
     gap: 2px;
-    padding: 8px 10px;
-    border-radius: 12px;
-    background: rgba(255, 255, 255, 0.12);
-    border: 1px solid rgba(255, 255, 255, 0.18);
-    backdrop-filter: blur(8px);
+    padding: 10px 16px;
+    border-radius: 999px;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(231, 241, 255, 0.88));
+    border: 2px solid rgba(255, 255, 255, 0.60);
+    box-shadow:
+        0 10px 22px rgba(0, 0, 0, 0.18),
+        inset 0 1px 0 rgba(255, 255, 255, 0.85);
 }
 
 .hud-chip-label {
-    font-size: 11px;
-    letter-spacing: 0.14em;
+    font-size: 12px;
+    letter-spacing: 0.06em;
     text-transform: uppercase;
-    opacity: 0.75;
+    opacity: 0.8;
 }
 
 .hud-chip-value {
-    font-size: 16px;
-    font-weight: 800;
+    font-size: 18px;
+    font-weight: 900;
     line-height: 1.1;
 }
 
@@ -80,22 +93,27 @@ body {
 }
 
 .icon-btn {
-    width: 44px;
+    width: 88px;
     height: 44px;
-    border-radius: 12px;
-    background: rgba(255, 255, 255, 0.14);
-    border: 1px solid rgba(255, 255, 255, 0.22);
-    color: #fff;
+    border-radius: 999px;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(231, 241, 255, 0.88));
+    border: 2px solid rgba(255, 255, 255, 0.60);
+    color: #0b0f18;
     cursor: pointer;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    font-size: 18px;
-    transition: transform 0.15s, background 0.15s;
+    font-size: 12px;
+    letter-spacing: 0.10em;
+    text-transform: uppercase;
+    box-shadow:
+        0 10px 22px rgba(0, 0, 0, 0.18),
+        inset 0 1px 0 rgba(255, 255, 255, 0.85);
+    transition: transform 0.12s ease, filter 0.12s ease, opacity 0.12s ease;
 }
 
 .icon-btn:hover {
-    background: rgba(255, 255, 255, 0.22);
+    filter: brightness(1.03);
     transform: translateY(-1px);
 }
 
@@ -118,26 +136,30 @@ body {
     height: 10px;
     border-radius: 999px;
     overflow: hidden;
-    background: rgba(255, 255, 255, 0.14);
-    border: 1px solid rgba(255, 255, 255, 0.18);
+    background: rgba(255, 255, 255, 0.35);
+    border: 2px solid rgba(255, 255, 255, 0.55);
+    box-shadow:
+        0 10px 22px rgba(0, 0, 0, 0.14),
+        inset 0 1px 0 rgba(255, 255, 255, 0.75);
 }
 
 #streak-fill {
     height: 100%;
     width: 0%;
-    background: linear-gradient(90deg, #22c55e 0%, #ffd700 60%, #a855f7 100%);
-    transition: width 0.18s ease-out;
+    background: linear-gradient(90deg, #2cff73 0%, #ffe15a 55%, #ff7aa8 100%);
+    transition: width 0.14s ease-out;
 }
 
 #streak-text {
     font-size: 12px;
-    color: rgba(255, 255, 255, 0.85);
-    letter-spacing: 0.02em;
+    color: rgba(0, 0, 0, 0.6);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
 }
 
 #score-hud {
     position: absolute;
-    top: 68px;
+    top: 72px;
     left: 50%;
     transform: translateX(-50%);
     text-align: center;
@@ -146,47 +168,56 @@ body {
 
 #score-value {
     font-size: 72px;
-    font-weight: 900;
+    font-weight: 1000;
     line-height: 0.95;
-    text-shadow: 0 0 25px rgba(255, 255, 255, 0.18);
+    letter-spacing: 0.02em;
+    color: rgba(0, 0, 0, 0.9);
+    text-shadow:
+        0 2px 0 rgba(255, 255, 255, 0.35),
+        0 14px 26px rgba(0, 0, 0, 0.14);
 }
 
 #score-label {
     margin-top: 4px;
     font-size: 12px;
-    letter-spacing: 0.22em;
+    letter-spacing: 0.26em;
     text-transform: uppercase;
-    opacity: 0.72;
+    opacity: 0.45;
 }
 
 .ui-btn {
-    background: rgba(255, 255, 255, 0.2);
-    border: 2px solid rgba(255, 255, 255, 0.3);
-    color: #fff;
-    padding: 10px 20px;
-    border-radius: 8px;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(231, 241, 255, 0.88));
+    border: 2px solid rgba(255, 255, 255, 0.60);
+    color: #0b0f18;
+    padding: 12px 22px;
+    border-radius: 999px;
     cursor: pointer;
-    font-size: 16px;
-    transition: all 0.2s;
+    font-size: 14px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    box-shadow:
+        0 10px 22px rgba(0, 0, 0, 0.18),
+        inset 0 1px 0 rgba(255, 255, 255, 0.85);
+    transition: transform 0.12s ease, filter 0.12s ease, opacity 0.12s ease;
 }
 
 .ui-btn:hover {
-    background: rgba(255, 255, 255, 0.3);
-    transform: scale(1.05);
+    filter: brightness(1.03);
+    transform: translateY(-1px);
 }
 
 .ui-btn:disabled {
-    opacity: 0.45;
+    opacity: 0.35;
     cursor: not-allowed;
 }
 
 .ui-btn:disabled:hover {
     transform: none;
-    background: rgba(255, 255, 255, 0.2);
+    background: transparent;
 }
 
 .ui-btn:active {
-    transform: scale(0.95);
+    transform: translateY(0);
 }
 
 .perk-btn {
@@ -200,21 +231,21 @@ body {
 }
 
 .perk-btn.charged {
-    background: rgba(0, 255, 0, 0.3);
-    border-color: #00ff00;
+    background: rgba(0, 0, 0, 0.06);
+    border-color: rgba(0, 0, 0, 0.75);
 }
 
 .perk-btn.active {
-    background: rgba(255, 165, 0, 0.3);
-    border-color: #ffa500;
+    background: rgba(0, 0, 0, 0.08);
+    border-color: rgba(0, 0, 0, 0.85);
 }
 
 .perk-progress {
     position: absolute;
     bottom: 0;
     left: 0;
-    height: 4px;
-    background: #00ff00;
+    height: 2px;
+    background: #101010;
     transition: width 0.3s;
 }
 
@@ -226,6 +257,50 @@ body {
     display: flex;
     align-items: center;
     justify-content: center;
+    /* blue background (no dot pattern) */
+    background: linear-gradient(180deg, #66b6ff 0%, #4ea2ff 60%, #3f96ff 100%);
+}
+
+/* Debug overlay (enable with ?debug=1) */
+#debug-overlay {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 999;
+}
+
+.debug-box {
+    position: absolute;
+    border: 2px solid rgba(255, 0, 0, 0.9);
+    background: rgba(255, 0, 0, 0.06);
+    box-sizing: border-box;
+}
+
+.debug-box.debug-danger {
+    border-color: rgba(0, 110, 255, 0.95);
+    background: rgba(0, 110, 255, 0.06);
+}
+
+.debug-box.debug-jaw-top {
+    border-color: rgba(0, 200, 120, 0.95);
+    background: rgba(0, 200, 120, 0.05);
+}
+
+.debug-box.debug-jaw-bot {
+    border-color: rgba(200, 0, 255, 0.95);
+    background: rgba(200, 0, 255, 0.05);
+}
+
+.debug-line {
+    position: absolute;
+    width: 0;
+    border-left: 2px solid rgba(255, 0, 0, 0.95);
+    top: 0;
+}
+
+.debug-line.debug-anchor {
+    border-left-color: rgba(0, 0, 0, 0.55);
+    border-left-style: dashed;
 }
 
 #number-strip-container {
@@ -245,8 +320,8 @@ body {
 }
 
 .number-circle {
-    width: 40px;
-    height: 40px;
+    width: var(--circle-size);
+    height: var(--circle-size);
     border-radius: 50%;
     margin: 0 15px;
     transition: all 0.2s;
@@ -254,24 +329,40 @@ body {
 }
 
 .number-circle.normal {
-    background-color: #000;
-    border: 2px solid #000;
+    background: rgba(255, 255, 255, 0.85);
+    border: 4px solid rgba(0, 0, 0, 0.75);
+    box-shadow:
+        0 10px 22px rgba(0, 0, 0, 0.18),
+        inset 0 1px 0 rgba(255, 255, 255, 0.8);
+    opacity: 0.95;
 }
 
 .number-circle.danger {
-    background-color: #ff0000;
-    border: 2px solid #ff0000;
+    background: rgba(255, 255, 255, 0.92);
+    border: 4px dashed rgba(0, 0, 0, 0.85);
+    box-shadow:
+        0 0 0 6px rgba(255, 64, 64, 0.22),
+        0 10px 22px rgba(0, 0, 0, 0.18),
+        inset 0 1px 0 rgba(255, 255, 255, 0.85);
+    opacity: 1;
+    transform: scale(1.32);
 }
 
 .number-circle.passed {
-    background-color: #22c55e; /* зелёный */
-    border: 2px solid #16a34a;
+    background: rgba(255, 255, 255, 0.45);
+    border: 4px solid rgba(0, 0, 0, 0.18);
+    opacity: 0.55;
+    box-shadow: none;
 }
 
 .number-circle.active {
     /* ВАЖНО: не меняем width/height, иначе ломаем геометрию ленты и центрирование */
-    transform: scale(1.25);
-    box-shadow: 0 0 15px rgba(255, 255, 255, 0.5);
+    transform: scale(1.18);
+    opacity: 1;
+    background: rgba(255, 255, 255, 0.95);
+    box-shadow:
+        0 16px 34px rgba(0, 0, 0, 0.22),
+        inset 0 1px 0 rgba(255, 255, 255, 0.9);
 }
 
 /* Focus Zone */
@@ -279,9 +370,14 @@ body {
     position: absolute;
     width: 200px;
     height: 200px;
+    /* Move indicator to the left side (reference-style layout) */
+    left: 0;
+    top: 50%;
+    /* Lift penguin relative to the lane by 1/4 circle height */
+    transform: translateY(-50%) translateY(calc(var(--lane-shift-y) * -1));
     display: flex;
     align-items: center;
-    justify-content: center;
+    justify-content: flex-start;
     z-index: 10;
     pointer-events: none;
     transform-origin: center center;
@@ -291,11 +387,9 @@ body {
     position: absolute;
     width: 150px; /* Максимальный размер анимации (остается прежним) */
     height: 150px;
-    border: 4px solid rgba(255, 255, 255, 0.4);
+    border: 2px dotted rgba(0, 0, 0, 0.35);
     border-radius: 50%;
-    box-shadow: 
-        0 0 20px rgba(255, 255, 255, 0.2),
-        inset 0 0 20px rgba(255, 255, 255, 0.05);
+    box-shadow: none;
     z-index: 9;
 }
 
@@ -303,21 +397,140 @@ body {
     position: absolute;
     width: 75px; /* Минимальный размер (уменьшен в 2 раза) */
     height: 75px;
-    border: 4px solid rgba(255, 255, 255, 0.6);
+    border: 6px solid #101010;
     border-radius: 50%;
-    box-shadow: 
-        0 0 20px rgba(255, 255, 255, 0.3),
-        inset 0 0 20px rgba(255, 255, 255, 0.1);
+    box-shadow: none;
     transform-origin: center center;
     will-change: transform;
     z-index: 10;
 }
 
+.focus-penguin {
+    position: absolute;
+    /* Keep the same aspect ratio as head.svg to avoid letterboxing on mobile */
+    width: min(360px, 62vw);
+    aspect-ratio: 410 / 251; /* head.svg viewBox */
+    height: auto;
+    transform-origin: center center;
+    will-change: transform;
+    z-index: 10;
+    left: 0;
+}
+
+/* Penguin composite (head + jaws) */
+.penguin {
+    position: relative;
+    width: 100%;
+    height: 100%;
+}
+
+.penguin-layer {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    user-select: none;
+    -webkit-user-drag: none;
+    pointer-events: none;
+}
+
+/* Head fills the whole container */
+.penguin-head {
+    z-index: 1;
+}
+
+/* Jaw pieces are smaller and positioned in the head coordinate space.
+   Defaults are derived from the original head viewBox (410x251) and jaw viewBoxes.
+   Adjust these CSS vars to calibrate composition. */
+.penguin {
+    --jaw-top-w: 50.7%;
+    --jaw-top-h: 45.1%;
+    --jaw-bot-w: 48.5%;
+    --jaw-bot-h: 44.1%;
+    /* Variant B: final positions (edit these directly) */
+    --jaw-top-x: 73.3%;
+    --jaw-top-y: 19.8%;
+    --jaw-bot-x: 73.3%;
+    --jaw-bot-y: 45.4%;
+}
+
+.penguin-jaw {
+    z-index: 2;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+}
+
+.penguin-jaw--top {
+    left: var(--jaw-top-x);
+    top: var(--jaw-top-y);
+    width: var(--jaw-top-w);
+    height: var(--jaw-top-h);
+    right: auto;
+    bottom: auto;
+    transform-origin: 0% 100%; /* left bottom corner */
+}
+
+.penguin-jaw--bot {
+    left: var(--jaw-bot-x);
+    top: var(--jaw-bot-y);
+    width: var(--jaw-bot-w);
+    height: var(--jaw-bot-h);
+    right: auto;
+    bottom: auto;
+    transform-origin: 0% 0%; /* left top corner */
+}
+
+/* Bite animations (small / big). Trigger by toggling classes on #penguin-root */
+@keyframes penguinJawTopSmall {
+    0% { transform: rotate(0deg); }
+    35% { transform: rotate(-12deg); }
+    100% { transform: rotate(0deg); }
+}
+@keyframes penguinJawBotSmall {
+    0% { transform: rotate(0deg); }
+    35% { transform: rotate(12deg); }
+    100% { transform: rotate(0deg); }
+}
+@keyframes penguinJawTopBig {
+    0% { transform: rotate(0deg); }
+    40% { transform: rotate(-42deg); }
+    100% { transform: rotate(0deg); }
+}
+@keyframes penguinJawBotBig {
+    0% { transform: rotate(0deg); }
+    40% { transform: rotate(42deg); }
+    100% { transform: rotate(0deg); }
+}
+
+/* Head nudge during bite */
+@keyframes penguinNudgeSmall {
+    0% { transform: translateX(0); }
+    35% { transform: translateX(-3%); }
+    100% { transform: translateX(0); }
+}
+
+@keyframes penguinNudgeBig {
+    0% { transform: translateX(0); }
+    40% { transform: translateX(-30%); }
+    100% { transform: translateX(0); }
+}
+
+.penguin.bite-small .penguin-jaw--top { animation: penguinJawTopSmall var(--bite-ms, 140ms) ease-in-out; }
+.penguin.bite-small .penguin-jaw--bot { animation: penguinJawBotSmall var(--bite-ms, 140ms) ease-in-out; }
+.penguin.bite-big .penguin-jaw--top { animation: penguinJawTopBig var(--bite-ms, 180ms) ease-in-out; }
+.penguin.bite-big .penguin-jaw--bot { animation: penguinJawBotBig var(--bite-ms, 180ms) ease-in-out; }
+
+.penguin.bite-small { animation: penguinNudgeSmall var(--bite-ms, 140ms) ease-in-out; }
+.penguin.bite-big { animation: penguinNudgeBig var(--bite-ms, 180ms) ease-in-out; }
+
 
 /* Controls */
 #controls {
     position: absolute;
-    bottom: 40px;
+    bottom: 22px;
     left: 0;
     right: 0;
     display: flex;
@@ -357,11 +570,11 @@ body {
 }
 
 .slow-btn {
-    min-width: 220px;
+    min-width: 240px;
     padding: 12px 22px;
     border-radius: 999px;
-    font-weight: 800;
-    letter-spacing: 0.02em;
+    font-weight: 900;
+    letter-spacing: 0.08em;
 }
 
 .slow-btn:disabled {
@@ -375,46 +588,58 @@ body {
 }
 
 .slow-btn.ready {
-    background: rgba(34, 197, 94, 0.25);
-    border-color: rgba(34, 197, 94, 0.55);
+    background: linear-gradient(180deg, #7dbbff 0%, #2a7cff 100%);
+    border-color: rgba(255, 255, 255, 0.75);
+    color: rgba(255, 255, 255, 0.95);
 }
 
 .control-btn {
-    min-width: 80px;
-    height: 80px;
-    background: rgba(255, 255, 255, 0.15);
-    border: 3px solid rgba(255, 255, 255, 0.4);
-    color: #fff;
-    font-size: 24px;
-    font-weight: bold;
-    border-radius: 12px;
+    min-width: 210px;
+    height: 86px;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(231, 241, 255, 0.88));
+    border: 3px solid rgba(255, 255, 255, 0.70);
+    color: rgba(0, 0, 0, 0.85);
+    font-size: 44px;
+    font-weight: 1000;
+    border-radius: 28px;
     cursor: pointer;
     transition: all 0.15s;
     display: flex;
     align-items: center;
     justify-content: center;
-    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+    box-shadow:
+        0 16px 30px rgba(0, 0, 0, 0.22),
+        inset 0 1px 0 rgba(255, 255, 255, 0.85);
 }
 
 .control-btn:hover {
-    background: rgba(255, 255, 255, 0.25);
+    filter: brightness(1.03);
     transform: translateY(-2px);
-    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+    box-shadow:
+        0 18px 34px rgba(0, 0, 0, 0.24),
+        inset 0 1px 0 rgba(255, 255, 255, 0.85);
 }
 
 .control-btn:active {
     transform: translateY(0);
-    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+    box-shadow: none;
 }
 
 .control-btn.solution {
-    border-color: #00ff00;
-    box-shadow: 0 0 20px rgba(0, 255, 0, 0.5);
+    background: linear-gradient(180deg, #8dff6a 0%, #35d04a 100%);
+    border-color: rgba(255, 255, 255, 0.75);
+    color: rgba(0, 0, 0, 0.85);
 }
 
 .control-btn.trap {
-    border-color: #ff0000;
-    box-shadow: 0 0 20px rgba(255, 0, 0, 0.5);
+    background: linear-gradient(180deg, #ff6a6a 0%, #d03737 100%);
+    border-color: rgba(255, 255, 255, 0.75);
+    color: rgba(255, 255, 255, 0.92);
+}
+
+.control-btn.neutral {
+    background: linear-gradient(180deg, #dfe9ff 0%, #b9ccff 100%);
+    border-color: rgba(255, 255, 255, 0.75);
 }
 
 /* Overlay Screens */
@@ -424,12 +649,17 @@ body {
     left: 0;
     right: 0;
     bottom: 0;
-    background: rgba(0, 0, 0, 0.85);
+    background: rgba(255, 255, 255, 0.96);
     display: flex;
     align-items: center;
     justify-content: center;
     z-index: 200;
-    backdrop-filter: blur(10px);
+    backdrop-filter: none;
+}
+
+/* Pause should not dim the game background */
+#pause-screen.overlay-screen {
+    background: transparent;
 }
 
 .overlay-screen.hidden {
@@ -439,22 +669,25 @@ body {
 .overlay-content {
     text-align: center;
     padding: 40px;
-    background: rgba(26, 26, 46, 0.9);
-    border-radius: 20px;
-    border: 2px solid rgba(255, 255, 255, 0.2);
+    background: transparent;
+    border-radius: 18px;
+    border: 1px solid rgba(0, 0, 0, 0.35);
     min-width: 300px;
 }
 
 .overlay-content h2 {
     font-size: 36px;
     margin-bottom: 20px;
-    color: #fff;
+    color: #101010;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
 }
 
 #final-score {
     font-size: 24px;
     margin: 20px 0;
-    color: #ffd700;
+    color: rgba(0, 0, 0, 0.7);
+    letter-spacing: 0.08em;
 }
 
 #game-over-buttons {
@@ -465,15 +698,15 @@ body {
 }
 
 #countdown-overlay {
-    background: rgba(0, 0, 0, 0.7);
+    background: rgba(255, 255, 255, 0.92);
 }
 
 #countdown-text {
     font-size: 120px;
     font-weight: bold;
-    color: #fff;
-    text-shadow: 0 0 30px rgba(255, 255, 255, 0.8);
-    animation: countdownPulse 1s ease-in-out;
+    color: #101010;
+    text-shadow: none;
+    animation: countdownPulse 0.1s ease-in-out;
 }
 
 @keyframes countdownPulse {
@@ -493,30 +726,27 @@ body {
 
 /* Start Screen */
 #start-screen {
-    background: rgba(0, 0, 0, 0.9);
+    background: rgba(255, 255, 255, 0.96);
 }
 
 #start-screen .overlay-content h2 {
-    font-size: 48px;
-    margin-bottom: 40px;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
+    font-size: 44px;
+    margin-bottom: 28px;
+    color: #101010;
 }
 
 .play-btn {
-    font-size: 24px;
-    padding: 15px 40px;
-    min-width: 200px;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    border: none;
-    margin-bottom: 30px;
+    font-size: 16px;
+    padding: 14px 34px;
+    min-width: 220px;
+    background: rgba(0, 0, 0, 0.08);
+    border: 1px solid rgba(0, 0, 0, 0.75);
+    margin-bottom: 24px;
 }
 
 .play-btn:hover {
-    transform: scale(1.05);
-    box-shadow: 0 0 30px rgba(102, 126, 234, 0.6);
+    transform: translateY(-1px);
+    box-shadow: none;
 }
 
 .volume-control,
@@ -530,17 +760,20 @@ body {
 .volume-control label,
 #volume-control label {
     font-size: 16px;
-    color: #fff;
+    color: rgba(0, 0, 0, 0.7);
+    text-transform: uppercase;
+    letter-spacing: 0.10em;
 }
 
 .volume-control input[type="range"],
 #volume-slider {
     flex: 1;
     height: 6px;
-    background: rgba(255, 255, 255, 0.2);
+    background: rgba(0, 0, 0, 0.12);
     border-radius: 3px;
     outline: none;
     -webkit-appearance: none;
+    appearance: none;
 }
 
 .volume-control input[type="range"]::-webkit-slider-thumb,
@@ -549,7 +782,7 @@ body {
     appearance: none;
     width: 18px;
     height: 18px;
-    background: #667eea;
+    background: #101010;
     border-radius: 50%;
     cursor: pointer;
     transition: all 0.2s;
@@ -557,7 +790,7 @@ body {
 
 .volume-control input[type="range"]::-webkit-slider-thumb:hover,
 #volume-slider::-webkit-slider-thumb:hover {
-    background: #764ba2;
+    background: #101010;
     transform: scale(1.2);
 }
 
@@ -565,7 +798,7 @@ body {
 #volume-slider::-moz-range-thumb {
     width: 18px;
     height: 18px;
-    background: #667eea;
+    background: #101010;
     border-radius: 50%;
     cursor: pointer;
     border: none;
@@ -574,24 +807,25 @@ body {
 
 .volume-control input[type="range"]::-moz-range-thumb:hover,
 #volume-slider::-moz-range-thumb:hover {
-    background: #764ba2;
+    background: #101010;
     transform: scale(1.2);
 }
 
 .volume-control span,
 #volume-value {
     font-size: 16px;
-    color: #fff;
+    color: rgba(0, 0, 0, 0.75);
     min-width: 45px;
     text-align: right;
 }
 
 /* Responsive */
 @media (max-width: 768px) {
+    :root {
+        --circle-size: 34px;
+    }
     .number-circle {
-        width: 30px;
-        height: 30px;
-        margin: 0 10px;
+        margin: 0 12px;
     }
     
     .number-circle.active {
@@ -600,15 +834,19 @@ body {
     }
     
     .control-btn {
-        min-width: 60px;
-        height: 60px;
-        font-size: 20px;
+        min-width: 180px;
+        height: 76px;
+        font-size: 40px;
+        border-width: 3px;
+        border-radius: 26px;
     }
     
     #focus-zone {
         width: 150px;
         height: 150px;
     }
+
+    /* .focus-penguin keeps head aspect ratio globally; no mobile override */
     
     .focus-circle-static {
         width: 130px; /* Максимальный размер для мобильных */
@@ -635,9 +873,9 @@ body {
     }
 
     .icon-btn {
-        width: 40px;
+        width: 78px;
         height: 40px;
-        border-radius: 12px;
+        border-radius: 999px;
     }
 }
 

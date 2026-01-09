@@ -25,8 +25,8 @@
                     </div>
 
                     <div id="hud-actions">
-                        <button id="sound-btn" class="icon-btn" aria-label="Sound" title="Sound">🔊</button>
-                        <button id="pause-btn" class="icon-btn" aria-label="Pause" title="Pause">⏸</button>
+                        <button id="sound-btn" class="icon-btn" aria-label="Sound" title="Sound">SND</button>
+                        <button id="pause-btn" class="icon-btn" aria-label="Pause" title="Pause">PAU</button>
                     </div>
                 </div>
 
@@ -43,8 +43,11 @@
                 <div id="number-strip"></div>
             </div>
             <div id="focus-zone">
-                <div class="focus-circle-static"></div>
-                <div class="focus-circle"></div>
+                <div id="penguin-root" class="focus-penguin penguin" aria-label="Penguin">
+                    <img id="penguin-head" class="penguin-layer penguin-head" src="img/head.svg" alt="">
+                    <img id="penguin-top-jaw" class="penguin-layer penguin-jaw penguin-jaw--top" src="img/top-jaw.svg" alt="">
+                    <img id="penguin-bot-jaw" class="penguin-layer penguin-jaw penguin-jaw--bot" src="img/bot-jaw.svg" alt="">
+                </div>
             </div>
         </div>
 

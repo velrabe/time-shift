@@ -96,6 +96,12 @@ class Game {
             this.resume();
         });
 
+        // Game over по коллизии "danger касается головы пингвина"
+        eventBus.on('PENGUIN_DANGER_COLLISION', (data) => {
+            if (this.state !== 'RUNNING') return;
+            this.gameOver({ reason: 'PENGUIN_DANGER_COLLISION', dangerStart: data?.dangerStart });
+        });
+
         // Горячие клавиши
         document.addEventListener('keydown', (e) => {
             if (this.state !== 'RUNNING') return;
@@ -286,6 +292,7 @@ class Game {
         
         // Обновление таймера
         this.timer.update(currentTime);
+        if (this.state !== 'RUNNING') return;
         
         // Проверка инверсии
         this.timer.checkInversion();
@@ -293,12 +300,7 @@ class Game {
         // Обновление директора
         const gameState = this.getGameState();
         this.director.update(gameState);
-        
-        // Проверка опасности
-        if (this.director.checkDanger(this.timer.current)) {
-            this.gameOver();
-            return;
-        }
+        if (this.state !== 'RUNNING') return;
         
         // Обновление перков
         this.perks.update(gameState);
@@ -400,12 +402,7 @@ class Game {
         }
 
         this.timer.shift(delta);
-        
-        // Проверка опасности после сдвига
-        if (this.director.checkDanger(this.timer.current)) {
-            this.gameOver();
-            return;
-        }
+        if (this.state !== 'RUNNING') return;
         
         // Обновление кнопок
         const gameState = this.getGameState();
@@ -475,7 +472,7 @@ class Game {
     }
 
     // Game Over
-    gameOver() {
+    gameOver(meta = null) {
         if (this.state !== 'RUNNING') return;
         
         this.state = 'GAME_OVER';
@@ -483,9 +480,11 @@ class Game {
 
         // Запоминаем danger window, в котором произошла смерть,
         // чтобы Continue мог вернуть игрока на точку ДО начала этого окна
-        const deathWindow = this.director?.dangerWindows?.find(w =>
-            this.timer.current >= w.start && this.timer.current < (w.start + w.length)
-        );
+        const hintedStart = (meta && typeof meta.dangerStart === 'number') ? meta.dangerStart : null;
+        const deathWindow = this.director?.dangerWindows?.find(w => {
+            if (hintedStart != null) return w.start === hintedStart;
+            return this.timer.current >= w.start && this.timer.current < (w.start + w.length);
+        });
         this.lastDeathDangerWindow = deathWindow ? {
             start: deathWindow.start,
             length: deathWindow.length,

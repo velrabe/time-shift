@@ -42,6 +42,19 @@ class Renderer {
         this.biteOffsetX = 0; // px: можно калибровать "точку укуса" (положительное = вправо, отрицательное = влево)
         this.debugEls = null;
         this._lastBiteAt = 0;
+        // conveyor-mode state
+        this._conveyorEnabled = true;
+        this._biteTickCounter = -1;
+        this._biteStartedThisTick = false;
+        // фиксируем "статический" якорь рта, чтобы лента не следовала за transform-анимацией укуса
+        this._cachedMouthRightX = 0;
+        // conveyor bite state (avoid restarting animation each frame)
+        this._conveyorBiteActive = false;
+        this._conveyorBiteTickCounter = -1;
+        
+        // Food sprites for strip circles (normal = -s, danger = -b)
+        // NOTE: browser can't list /img, so we keep an explicit list.
+        this.foodBases = ['f1', 'f2', 'f3', 'f4', 'f5'];
         
         this.setupFocusZone();
         this.setupEventListeners();
@@ -49,17 +62,106 @@ class Renderer {
         this.setupDebugOverlay();
     }
 
+    // Визуальный фидбек кулдауна на действиях (2 кнопки)
+    // progress: 0..1 (0 = только что нажали, 1 = можно жать снова)
+    updateActionCooldown(progress) {
+        if (!this.controlButtons) return;
+        const p = Math.max(0, Math.min(1, Number(progress)));
+        const opacity = 0.35 + 0.65 * p;
+        const scale = 0.92 + 0.08 * p;
+
+        const btns = this.controlButtons.querySelectorAll('.control-btn');
+        btns.forEach((btn) => {
+            if (!btn || btn.disabled || btn.classList.contains('inactive')) return;
+            btn.style.setProperty('--cd-opacity', opacity.toFixed(3));
+            btn.style.setProperty('--cd-scale', scale.toFixed(3));
+        });
+    }
+
     // В debug-режиме показываем числа прямо на кружках, чтобы легче отлаживать "ленту"
     applyDebugLabelToCircle(circleEl) {
         if (!circleEl) return;
+        const ensureLabel = () => {
+            let lbl = circleEl.querySelector('.debug-label');
+            if (!lbl) {
+                lbl = document.createElement('span');
+                lbl.className = 'debug-label';
+                circleEl.appendChild(lbl);
+            }
+            return lbl;
+        };
+
         if (this.debug) {
             circleEl.classList.add('debug-number');
             const v = circleEl.dataset?.value;
-            circleEl.textContent = (v == null ? '' : String(v));
+            const lbl = ensureLabel();
+            lbl.textContent = (v == null ? '' : String(v));
         } else {
             circleEl.classList.remove('debug-number');
-            // Не трогаем текст, если не мы его ставили — но у нас сейчас кружки без контента.
-            circleEl.textContent = '';
+            const lbl = circleEl.querySelector('.debug-label');
+            if (lbl) lbl.remove();
+        }
+    }
+
+    // Deterministic "random" food pick by value (stable across frames)
+    getFoodBaseForValue(value) {
+        const v = Math.max(0, Number(value) || 0);
+        const bases = this.foodBases || [];
+        if (bases.length === 0) return null;
+        // simple LCG-ish hash
+        const h = (Math.floor(v) * 9301 + 49297) % 233280;
+        const idx = h % bases.length;
+        return bases[idx];
+    }
+
+    getFoodSrc(base, variant) {
+        if (!base) return '';
+        const v = variant === 'b' ? 'b' : 's';
+        return `img/${base}-${v}.png`;
+    }
+
+    ensureFoodCircle(circleEl) {
+        if (!circleEl) return;
+        let img = circleEl.querySelector('img.food-img');
+        if (!img) {
+            img = document.createElement('img');
+            img.className = 'food-img';
+            img.alt = '';
+            img.draggable = false;
+            img.decoding = 'async';
+            img.loading = 'eager';
+            img.addEventListener('error', () => {
+                // If -b is missing, fallback to -s to avoid broken images
+                const base = circleEl.dataset.foodBase || 'f1';
+                if (img.dataset.variant === 'b') {
+                    img.dataset.variant = 's';
+                    img.src = this.getFoodSrc(base, 's');
+                }
+            });
+            circleEl.appendChild(img);
+        }
+
+        const value = parseInt(circleEl.dataset.value);
+        const base = circleEl.dataset.foodBase || this.getFoodBaseForValue(value) || 'f1';
+        circleEl.dataset.foodBase = base;
+
+        // default to small
+        img.dataset.variant = 's';
+        img.src = this.getFoodSrc(base, 's');
+    }
+
+    updateFoodVariant(circleEl, isDanger) {
+        const img = circleEl?.querySelector?.('img.food-img');
+        if (!img) return;
+        const base = circleEl.dataset.foodBase || 'f1';
+        if (isDanger) {
+            img.dataset.variant = 'b';
+            img.src = this.getFoodSrc(base, 'b');
+            circleEl.style.setProperty('--food-scale', '2');
+        } else {
+            img.dataset.variant = 's';
+            img.src = this.getFoodSrc(base, 's');
+            circleEl.style.setProperty('--food-scale', '1');
         }
     }
 
@@ -175,6 +277,8 @@ class Renderer {
         } else {
             parts.root.style.removeProperty('--bite-ms');
         }
+        // По умолчанию (для разовых укусов) не используем сдвиг фазы
+        parts.root.style.setProperty('--bite-delay-ms', `0ms`);
         const cls = kind === 'big' ? 'bite-big' : 'bite-small';
         parts.root.classList.remove('bite-small', 'bite-big');
         // force reflow to restart animation
@@ -191,6 +295,51 @@ class Renderer {
         window.setTimeout(() => {
             parts.root?.classList?.remove(cls);
         }, ms);
+    }
+
+    // Conveyor-bite: синхронизация анимации с фазой тика без таймаута.
+    // durationMs: полная длительность окна укуса
+    // elapsedMs: сколько "прошло" внутри окна укуса (для отрицательного delay)
+    applyConveyorBite(kind, durationMs, elapsedMs, forceResync = false) {
+        const parts = this.getPenguinParts();
+        if (!parts?.root) return;
+        const cls = kind === 'big' ? 'bite-big' : 'bite-small';
+
+        // Если идёт big-bite (ручное действие) — не вмешиваемся
+        if (parts.root.classList.contains('bite-big') && cls !== 'bite-big') return;
+
+        const dMs = Math.max(1, Math.round(Number(durationMs) || 0));
+        const eMs = Math.max(0, Math.min(dMs, Math.round(Number(elapsedMs) || 0)));
+
+        // Важно: изменение animation-delay/animation-duration может перезапускать анимацию.
+        // Поэтому выставляем фазу ТОЛЬКО при входе в окно (или при принудительной ресинхронизации).
+        const hasCls = parts.root.classList.contains(cls);
+        if (!hasCls || forceResync) {
+            parts.root.style.setProperty('--bite-ms', `${dMs}ms`);
+            parts.root.style.setProperty('--bite-delay-ms', `-${eMs}ms`);
+            parts.root.classList.remove('bite-small', 'bite-big');
+            void parts.root.offsetHeight;
+            parts.root.classList.add(cls);
+        }
+    }
+
+    clearConveyorBite() {
+        const parts = this.getPenguinParts();
+        if (!parts?.root) return;
+        // не трогаем big-bite (он сам снимется таймером)
+        if (parts.root.classList.contains('bite-big')) return;
+        parts.root.classList.remove('bite-small');
+        parts.root.style.removeProperty('--bite-delay-ms');
+        parts.root.style.removeProperty('--bite-ms');
+    }
+
+    // Полностью остановить любые анимации укуса (используется при смерти: нужно "заморозить" момент контакта).
+    stopAllBites() {
+        const parts = this.getPenguinParts();
+        if (!parts?.root) return;
+        parts.root.classList.remove('bite-small', 'bite-big');
+        parts.root.style.removeProperty('--bite-delay-ms');
+        parts.root.style.removeProperty('--bite-ms');
     }
 
     // Полный сброс DOM-окна ленты (нужно при старте новой игры, чтобы current=0 центрировался сразу)
@@ -212,6 +361,9 @@ class Renderer {
     setupFocusZone() {
         // Вычисляем центр экрана
         const container = document.getElementById('game-area');
+        // Кэшируем позицию рта в "спокойном" состоянии.
+        // Даже если пингвин визуально двигается при укусе, лента должна ориентироваться на этот якорь.
+        this._cachedMouthRightX = container ? this.getPenguinMouthRightX(container) : 0;
         // Центр привязки теперь — центр focus-zone (он может быть смещён влево через CSS)
         this.focusZoneCenter = this.getFocusAnchorX(container);
         // При ресайзе могут поменяться размеры кружков/маргины (responsive) — пересчитываем метрики
@@ -223,13 +375,18 @@ class Renderer {
     getFocusAnchorX(containerEl) {
         if (!containerEl) return 0;
         try {
-            // Хотим, чтобы "активный" кружок был сразу СПРАВА от "рта" (правой границы челюстей):
-            // anchorX = mouthRightX + radius(circle)
-            const circleEl = this.numberStrip?.querySelector('.number-circle');
-            const circleWidth = circleEl?.offsetWidth || 42;
-            const circleRadius = circleWidth / 2;
-            const mouthRightX = this.getPenguinMouthRightX(containerEl);
-            if (mouthRightX > 0) return mouthRightX + circleRadius;
+            const containerRect = containerEl.getBoundingClientRect();
+
+            // Хотим, чтобы в начале тика кружок был СНАРУЖИ пасти (касался рта),
+            // а "въезжал" внутрь по мере прогресса.
+            // Поэтому якорь = mouthRightX + radius(circle).
+            const mouthRightX = (this._cachedMouthRightX > 0) ? this._cachedMouthRightX : this.getPenguinMouthRightX(containerEl);
+            if (mouthRightX > 0) {
+                const circleEl = this.numberStrip?.querySelector('.number-circle');
+                const circleWidth = circleEl?.offsetWidth || 42;
+                const circleRadius = circleWidth / 2;
+                return mouthRightX + circleRadius;
+            }
 
             const focusRect = this.focusZone?.getBoundingClientRect();
             if (focusRect) return (focusRect.left - containerRect.left) + (focusRect.width / 2);
@@ -241,7 +398,7 @@ class Renderer {
 
     // Проверка коллизии: левая граница ближайшей danger-точки коснулась правой границы головы.
     // Эмитим событие один раз на окно (по его start-значению).
-    checkPenguinDangerCollision(director) {
+    checkPenguinDangerCollision(director, current = null, isAuto = false) {
         if (this._deathTriggered) return;
         const container = document.getElementById('game-area');
         if (!container || !this.focusZone || !this.numberStrip) return;
@@ -295,10 +452,19 @@ class Renderer {
             anchorX: this.getFocusAnchorX(container)
         });
 
-        // NOTE:
-        // Раньше здесь была DOM-коллизия (danger дошёл до линии укуса) и мы эмитили game over отсюда.
-        // Сейчас game over считается логически в Game.onTickStep() через Director.dangerWindows,
-        // чтобы поведение не зависело от прерванных анимаций/DOM-состояния.
+        // Логическая коллизия, синхронизированная с моментом "half-entered" (когда current центрируется на mouthRightX):
+        // если это auto-тик (без нажатия), и current попал в danger window — эмитим смерть.
+        if (isAuto && director && typeof current === 'number' && Number.isFinite(current)) {
+            const w = Array.isArray(director.dangerWindows)
+                ? director.dangerWindows.find(win => current >= win.start && current < (win.start + win.length))
+                : null;
+            if (w && typeof w.start === 'number') {
+                // один раз на окно
+                this._deathTriggered = true;
+                this._deathTriggeredForStart = w.start;
+                eventBus.emit('PENGUIN_DANGER_COLLISION', { dangerStart: w.start, current });
+            }
+        }
     }
 
     setupEventListeners() {
@@ -310,6 +476,7 @@ class Renderer {
         // Подписка на события таймера (автоматический шаг)
         eventBus.on('TICK_STEP', (data) => {
             if (!data || !data.stepDuration || !data.timer) return;
+            if (this._conveyorEnabled) return; // в conveyor-mode лента управляется из gameLoop через updateConveyor()
 
             // Director может не успеть добавиться в payload (Renderer подписан раньше Game).
             // Поэтому берем director из gameInstance, если нужно.
@@ -327,6 +494,12 @@ class Renderer {
         // Подписка на события сдвига (принудительный шаг через кнопки)
         eventBus.on('SHIFT_USED', (data) => {
             if (data && typeof data.current === 'number' && data.timer) {
+                if (this._conveyorEnabled) {
+                    // В conveyor-mode лента обновится в следующем кадре из updateConveyor().
+                    // Здесь оставляем только "big bite" на действие.
+                    this.triggerBite('big', data.timer.calculateStepDuration() * 0.3);
+                    return;
+                }
                 // Круг НЕ останавливаем - он работает независимо!
                 // Только анимируем ленту к новому current
                 
@@ -353,6 +526,74 @@ class Renderer {
         eventBus.on('RESUME', () => {
             // Анимация возобновится автоматически при следующем TICK_STEP
         });
+    }
+
+    // Конвейерный режим: обновление позиции ленты каждый кадр по дробной позиции таймера.
+    // Также синхронизирует укус: старт когда пройдено первые 20% пути тика, конец на 100%.
+    updateConveyor(timer, director) {
+        if (!this._conveyorEnabled) return;
+        if (!timer) return;
+        if (!this.numberStrip) return;
+
+        const nowMs = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+        const pos = (typeof timer.getPosition === 'function') ? timer.getPosition(nowMs) : timer.current;
+
+        // обновляем/recycle окно вокруг ближайшего целого
+        const base = Math.floor(pos);
+        this.ensureStripWindowInitialized(base);
+        this.recomputeStripMetrics();
+        if (this.stripPitchPx == null || this.stripFirstCenterPx == null) return;
+
+        this.maybeRecycleStripWindow(base);
+        this.updateStripClasses(base, director);
+
+        // вычисляем translate по аналитике (работает для дробных значений)
+        const container = document.getElementById('game-area');
+        if (!container) return;
+        const anchorX = this.getFocusAnchorX(container);
+        const centerX = this.stripFirstCenterPx + (pos - this.stripMinValue) * this.stripPitchPx;
+        const targetOffset = anchorX - centerX;
+        this.numberStrip.style.transition = 'none';
+        this.numberStrip.style.transform = `translateX(${targetOffset}px)`;
+        this.currentStripOffset = targetOffset;
+
+        // Укус привязан к ТИКУ и к ПРОЙДЕННОМУ ПУТИ:
+        // активен на участке пути [0.2 .. 0.9], причём если мы "приземлились" на 0.5 —
+        // укус должен начаться сразу в нужной фазе (без "перебивания" каждый кадр).
+        const dist = (typeof timer.getTickDistanceProgress === 'function') ? timer.getTickDistanceProgress(nowMs) : 0;
+        const tProg = (typeof timer.getTickTimeProgress === 'function') ? timer.getTickTimeProgress(nowMs) : 0;
+        const stepSec = timer.stepDurationSec || timer.calculateStepDuration?.() || 1.0;
+        const tickCounter = timer.tickCounter ?? 0;
+
+        const biteStart = 0.2;
+        const biteEnd = 0.9;
+        const eps = 1e-4;
+
+        const tStart = (typeof timer.timeProgressFromDistanceProgress === 'function')
+            ? timer.timeProgressFromDistanceProgress(biteStart)
+            : 0;
+        const tEnd = (typeof timer.timeProgressFromDistanceProgress === 'function')
+            ? timer.timeProgressFromDistanceProgress(biteEnd)
+            : 1;
+
+        const shouldBite = dist >= (biteStart - eps) && dist <= (biteEnd + eps);
+
+        // Новый тик — сбросим окно укуса (чтобы оно могло стартовать корректно заново)
+        if (tickCounter !== this._conveyorBiteTickCounter) {
+            this._conveyorBiteTickCounter = tickCounter;
+            this._conveyorBiteActive = false;
+        }
+
+        if (shouldBite) {
+            const durationMs = Math.max(1, Math.round((tEnd - tStart) * stepSec * 1000));
+            const elapsedMs = Math.max(0, Math.min(durationMs, Math.round((tProg - tStart) * stepSec * 1000)));
+            const needStart = !this._conveyorBiteActive;
+            this.applyConveyorBite('small', durationMs, elapsedMs, needStart);
+            this._conveyorBiteActive = true;
+        } else if (this._conveyorBiteActive) {
+            this._conveyorBiteActive = false;
+            this.clearConveyorBite();
+        }
     }
     
     setupFocusZoneAnimation() {
@@ -447,7 +688,9 @@ class Renderer {
     // ========== АНИМАЦИЯ ЛЕНТЫ (независимая) ==========
     
     // Анимация только ленты к целевому смещению
-    animateStrip(durationSec, targetOffset, onComplete = null) {
+    // options:
+    // - profile: 'linear' | 'bite_30_70_x2'  (30% normal + 70% bite where speed is 2x)
+    animateStrip(durationSec, targetOffset, onComplete = null, options = null) {
         if (!this.numberStrip) return;
         
         // Останавливаем предыдущую анимацию ленты
@@ -458,11 +701,31 @@ class Renderer {
         
         const startTime = performance.now();
         const endTime = startTime + durationSec * 1000;
+
+        const profile = options?.profile || 'linear';
+        // timeProgress: 0..1  -> distanceProgress: 0..1
+        const easeProgress = (timeProgress) => {
+            const p = Math.max(0, Math.min(1, Number(timeProgress)));
+            if (profile !== 'bite_30_70_x2') return p;
+
+            // Требование: тик делится на 30% "обычно" и 70% "укус",
+            // при этом во время укуса скорость ленты в 2 раза выше.
+            const tSlow = 0.30;
+            const vSlow = 1.0;
+            const vFast = 2.0;
+            const denom = vSlow * tSlow + vFast * (1 - tSlow);
+
+            if (p <= tSlow) {
+                return (vSlow * p) / denom;
+            }
+            return (vSlow * tSlow + vFast * (p - tSlow)) / denom;
+        };
         
         const animate = (currentTime) => {
             if (currentTime < endTime) {
                 // currentTime в ms, durationSec в секундах
-                const progress = (currentTime - startTime) / (durationSec * 1000);
+                const t = (currentTime - startTime) / (durationSec * 1000);
+                const progress = easeProgress(t);
                 const currentOffset = startOffset + deltaOffset * progress;
                 
                 this.numberStrip.style.transition = 'none';
@@ -494,7 +757,7 @@ class Renderer {
     // ========== СИНХРОННАЯ АНИМАЦИЯ (при TICK_STEP) ==========
 
     // Единая обработка смены шага (auto или manual)
-    // - Лента всегда реально двигается на pitch * deltaSteps в 30% окна
+    // - Лента всегда реально двигается на pitch * deltaSteps (auto = весь тик, manual = быстро)
     // - После движения мы "пересобираем" окно значений вокруг current без визуального скачка (recycle + компенсация translate)
     // - Круг: только в auto, строго по stepDuration
     handleStepChange({ current, timer, director, stepDurationSec, isAuto }) {
@@ -510,7 +773,7 @@ class Renderer {
             this.updateStripPosition(current, null);
             if (isAuto) this.animateCircleAuto(stepDurationSec);
             this.updateStripClasses(current, director);
-            this.checkPenguinDangerCollision(director);
+            this.checkPenguinDangerCollision(director, current, isAuto);
             // Пока: "кусаем" на каждом шаге, чтобы визуально проверить работу анимации
             if (isAuto) this.triggerBite('small');
             return;
@@ -523,7 +786,7 @@ class Renderer {
         if (deltaSteps === 0) {
             this.updateStripClasses(current, director);
             if (isAuto) this.animateCircleAuto(stepDurationSec);
-            this.checkPenguinDangerCollision(director);
+            this.checkPenguinDangerCollision(director, current, isAuto);
             return;
         }
 
@@ -534,22 +797,38 @@ class Renderer {
         this.maybeRecycleStripWindow(current);
         this.updateStripClasses(current, director);
 
-        // Движение ленты к АБСОЛЮТНОМУ оффсету под current за 30% времени шага
-        const moveDuration = stepDurationSec * 0.3;
+        // Движение ленты к АБСОЛЮТНОМУ оффсету под current:
+        // - auto: весь тик (конвейер без паузы)
+        // - manual: короткий "рывок", чтобы сдвиг ощущался
+        const moveDuration = isAuto ? stepDurationSec : Math.min(stepDurationSec * 0.35, 0.25);
         const targetOffset = this.calculateTargetOffset(current);
 
-        // Укус должен совпадать со СТАРТОМ перемотки (как и при ручном SHIFT_USED)
-        if (isAuto) this.triggerBite('small', moveDuration);
+        // Синхронизация укуса и ускорения:
+        // 30% тика — обычное движение, затем 70% тика — "укус" (движение ускоряется x2).
+        if (isAuto) {
+            const tSlow = 0.30;
+            const biteDelayMs = Math.round(moveDuration * 1000 * tSlow);
+            const biteDurationSec = Math.max(0.05, moveDuration * (1 - tSlow));
+            window.setTimeout(() => {
+                this.triggerBite('small', biteDurationSec);
+            }, biteDelayMs);
+        }
 
-        this.animateStrip(moveDuration, targetOffset, () => {
+        this.animateStrip(
+            moveDuration,
+            targetOffset,
+            () => {
             // Редко и незаметно двигаем DOM-окно, если current приближается к краю буфера
             this.maybeRecycleStripWindow(current);
             // ВАЖНО: после recycle появляются новые элементы → им нужно выставить классы normal/danger
             this.updateStripClasses(current, director);
             // Финальный "snap": гарантируем, что CURRENT STEP ровно в центре круга
             this.updateStripPosition(current, null);
-            this.checkPenguinDangerCollision(director);
-        });
+            // ВАЖНО: коллизия/смерть должна срабатывать именно здесь — когда current "half-entered" (центр на mouthRightX)
+            this.checkPenguinDangerCollision(director, current, isAuto);
+            },
+            isAuto ? { profile: 'bite_30_70_x2' } : null
+        );
 
         if (isAuto) this.animateCircleAuto(stepDurationSec);
     }
@@ -632,6 +911,7 @@ class Renderer {
                 const circleEl = document.createElement('div');
                 circleEl.className = 'number-circle';
                 circleEl.dataset.value = i;
+                this.ensureFoodCircle(circleEl);
                 this.applyDebugLabelToCircle(circleEl);
             this.numberStrip.appendChild(circleEl);
         }
@@ -698,6 +978,7 @@ class Renderer {
                 // По умолчанию делаем точку видимой, дальше updateStripClasses исправит danger/active.
                 newEl.classList.add('normal');
                 newEl.dataset.value = nextValue;
+                this.ensureFoodCircle(newEl);
                 this.applyDebugLabelToCircle(newEl);
                 this.numberStrip.appendChild(newEl);
                 min += 1;
@@ -717,6 +998,7 @@ class Renderer {
                 newEl.className = 'number-circle';
                 newEl.classList.add('normal');
                 newEl.dataset.value = prevValue;
+                this.ensureFoodCircle(newEl);
                 this.applyDebugLabelToCircle(newEl);
                 this.numberStrip.insertBefore(newEl, this.numberStrip.firstElementChild);
                 min -= 1;
@@ -742,6 +1024,7 @@ class Renderer {
                     // Фон "passed" должен доминировать, поэтому убираем базовые normal/danger
                     el.classList.remove('normal');
                     el.classList.remove('danger');
+                    this.updateFoodVariant(el, false);
                 } else {
                     el.classList.remove('passed');
 
@@ -749,9 +1032,11 @@ class Renderer {
                     if (isDanger) {
                         el.classList.remove('normal');
                         el.classList.add('danger');
+                        this.updateFoodVariant(el, true);
                     } else {
                         el.classList.remove('danger');
                         el.classList.add('normal');
+                        this.updateFoodVariant(el, false);
                     }
                 }
 
@@ -812,80 +1097,52 @@ class Renderer {
         if (!this.controlButtons || !buttons || buttons.length === 0) {
             return;
         }
-        
-        // Очищаем только если количество кнопок изменилось
-        const existingButtons = this.controlButtons.querySelectorAll('.control-btn');
-        if (existingButtons.length !== buttons.length) {
-            this.controlButtons.innerHTML = '';
-        }
-        
-        // Создаем или обновляем кнопки
+
+        // В новой механике на экране всегда 2 кнопки.
+        // Для надежности и чтобы не ловить баги с "detached nodes" пересоздаём DOM-кнопки каждый раз.
+        this.controlButtons.innerHTML = '';
+
         buttons.forEach((button, index) => {
-            if (!button || button.delta === undefined) {
-                return;
-            }
-            
-            // Ищем существующую кнопку по delta
-            let btn = Array.from(existingButtons).find(b => b.dataset.delta == button.delta);
-            
-            if (!btn) {
-                // Создаем новую кнопку
-                btn = document.createElement('button');
-                btn.className = 'control-btn';
-                btn.dataset.delta = button.delta;
-                btn.type = 'button';
-                this.controlButtons.appendChild(btn);
-            }
-            
-            // Обновляем содержимое и состояние
+            if (!button || typeof button.delta !== 'number') return;
+
+            const btn = document.createElement('button');
+            btn.className = 'control-btn';
+            btn.dataset.delta = String(button.delta);
+            btn.type = 'button';
+
+            // Текст
             btn.textContent = button.label || (button.delta > 0 ? `+${button.delta}` : `${button.delta}`);
-            
-            // Удаляем все классы типов
+
+            // Классы
             btn.classList.remove('solution', 'trap', 'neutral', 'inactive');
-            
-            // Добавляем классы по типу и активности
             if (button.active) {
-                if (button.type === 'solution') {
-                    btn.classList.add('solution');
-                } else if (button.type === 'trap') {
-                    btn.classList.add('trap');
-                } else {
-                    btn.classList.add('neutral');
-                }
                 btn.disabled = false;
+                if (button.type === 'solution') btn.classList.add('solution');
+                else if (button.type === 'trap') btn.classList.add('trap');
+                else btn.classList.add('neutral');
             } else {
-                btn.classList.add('inactive');
                 btn.disabled = true;
+                btn.classList.add('inactive');
             }
-            
-            // Удаляем старые обработчики
-            const newBtn = btn.cloneNode(true);
-            btn.parentNode.replaceChild(newBtn, btn);
-            btn = newBtn;
-            
-            // Добавляем обработчик клика только для активных кнопок
+
+            // Хоткеи (1/2)
+            if (button.active && index < 2) {
+                btn.title = `Hotkey: ${(index + 1).toString()}`;
+            }
+
+            // Клик/тач
             if (button.active) {
                 const clickHandler = (e) => {
                     e.preventDefault();
                     e.stopPropagation();
-                    // Помечаем, что пользователь взаимодействовал (для аудио)
-                    if (window.gameInstance) {
-                        window.gameInstance.userInteracted = true;
-                    }
+                    if (window.gameInstance) window.gameInstance.userInteracted = true;
                     eventBus.emit('BUTTON_CLICKED', { delta: button.delta });
                 };
-                
                 btn.addEventListener('click', clickHandler);
                 btn.addEventListener('touchstart', clickHandler);
             }
-            
-            // Горячие клавиши только для активных кнопок
-            if (button.active && index < 4) {
-                const key = (index + 1).toString();
-                btn.title = `Hotkey: ${key}`;
-            } else {
-                btn.title = '';
-            }
+
+            this.controlButtons.appendChild(btn);
         });
     }
 

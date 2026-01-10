@@ -579,78 +579,106 @@ class Director {
             };
         }
         
-        const availableDeltas = this.controlSet.availableDeltas;
-        
+        const availableDeltasRaw = Array.isArray(this.controlSet.availableDeltas)
+            ? this.controlSet.availableDeltas
+            : [];
+
+        // Всегда хотим вернуть РОВНО 2 кнопки действий.
+        // Если ControlSet по какой-то причине некорректен — даем безопасный fallback.
+        const availableDeltas =
+            availableDeltasRaw.length >= 2 ? availableDeltasRaw.slice() : [-1, 2];
+
         // Ближайшее активное/наступающее окно (end >= current), с минимальным start
         const nextWindow = this.dangerWindows
             .filter(w => (w.start + w.length - 1) >= timer.current)
             .reduce((min, w) => (!min || w.start < min.start ? w : min), null);
-        
-        // Определяем активные кнопки
-        const activeDeltas = new Set();
+
+        const isDeltaSafeForWindow = (delta, win) => {
+            if (!win) return true;
+            const windowStart = win.start;
+            const windowEnd = win.start + win.length - 1;
+            const newPos = timer.current + delta;
+            return newPos < windowStart || newPos > windowEnd;
+        };
+
+        // 1) Собираем пул кандидатов (из ControlSet; solutionDelta добавляем если есть окно)
+        const poolSet = new Set(availableDeltas);
+        if (nextWindow && typeof nextWindow.solutionDelta === 'number') poolSet.add(nextWindow.solutionDelta);
+        const pool = Array.from(poolSet);
+
+        const pickRandom = (arr) => arr[Math.floor(Math.random() * arr.length)];
+
+        // Для "правильности" в контексте ближайшего окна:
+        // правильная = перепрыгивает окно (newPos > windowEnd).
+        const classForDelta = (delta, win) => {
+            if (!win) return 'neutral';
+            const windowStart = win.start;
+            const windowEnd = win.start + win.length - 1;
+            const newPos = timer.current + delta;
+            if (newPos > windowEnd) return 'solution';
+            if (newPos >= windowStart && newPos <= windowEnd) return 'trap';
+            return 'neutral';
+        };
+
+        let leftDelta;
+        let rightDelta;
+
         if (nextWindow) {
-            // Solution button из окна
-            activeDeltas.add(nextWindow.solutionDelta);
-            
-            // Остальные кнопки из ControlSet
-            const otherDeltas = availableDeltas.filter(d => d !== nextWindow.solutionDelta);
-            
-            // Нейтральные кнопки (не приводят к попаданию в окно)
-            const neutralDeltas = this.filterNeutralDeltas(otherDeltas, timer.current, nextWindow);
-            neutralDeltas.forEach(d => activeDeltas.add(d));
-            
-            // Ловушки (опционально, в зависимости от прогресса)
-            if (timer.maxReached > 20 && Math.random() > 0.5) {
-                const trapDeltas = otherDeltas.filter(d => !neutralDeltas.includes(d));
-                if (trapDeltas.length > 0) {
-                    activeDeltas.add(trapDeltas[0]);
-                }
-            }
+            const windowStart = nextWindow.start;
+            const windowEnd = nextWindow.start + nextWindow.length - 1;
+            const distanceToStart = windowStart - timer.current;
+
+            const solutions = pool.filter(d => (timer.current + d) > windowEnd);
+            const neutrals = pool.filter(d => {
+                const t = classForDelta(d, nextWindow);
+                return t === 'neutral';
+            });
+            const traps = pool.filter(d => classForDelta(d, nextWindow) === 'trap');
+
+            // Показываем "решаемость" когда danger реально близко (иначе раннее нажатие может быть безопасным,
+            // но не перепрыгнет окно — и игрок всё равно должен успеть нажать позже).
+            const shouldGuaranteeSolution = distanceToStart <= 2;
+
+            // Первую кнопку выбираем так, чтобы:
+            // - если пора решать и есть solution → дать solution
+            // - иначе хотя бы не дать 2 ловушки
+            let primary;
+            if (shouldGuaranteeSolution && solutions.length > 0) primary = pickRandom(solutions);
+            else if (neutrals.length > 0) primary = pickRandom(neutrals);
+            else primary = pickRandom(pool);
+
+            // Вторую — стараемся сделать другой; предпочитаем (если пора решать) вторую solution/neutral для вариативности,
+            // иначе можно дать trap как риск.
+            const poolAlt = pool.filter(d => d !== primary);
+            const solutionsAlt = poolAlt.filter(d => (timer.current + d) > windowEnd);
+            const neutralsAlt = poolAlt.filter(d => classForDelta(d, nextWindow) === 'neutral');
+            const trapsAlt = poolAlt.filter(d => classForDelta(d, nextWindow) === 'trap');
+
+            let secondary;
+            if (shouldGuaranteeSolution && solutionsAlt.length > 0) secondary = pickRandom(solutionsAlt);
+            else if (neutralsAlt.length > 0) secondary = pickRandom(neutralsAlt);
+            else if (trapsAlt.length > 0) secondary = pickRandom(trapsAlt);
+            else secondary = primary;
+
+            const sorted = [primary, secondary].sort((a, b) => a - b);
+            leftDelta = sorted[0];
+            rightDelta = sorted[1];
         } else {
-            // Нет активных окон - все кнопки из ControlSet активны
-            availableDeltas.forEach(d => activeDeltas.add(d));
+            // Если окна впереди нет — просто 2 кнопки из ControlSet (стабильно, без случайностей).
+            const sorted = availableDeltas.slice().sort((a, b) => a - b);
+            leftDelta = sorted[0];
+            rightDelta = sorted[1] ?? sorted[0];
         }
-        
-        // Гарантируем минимум 2 активные кнопки
-        if (activeDeltas.size < 2) {
-            const missing = availableDeltas.filter(d => !activeDeltas.has(d));
-            missing.slice(0, 2 - activeDeltas.size).forEach(d => activeDeltas.add(d));
-        }
-        
-        // Создаем фиксированный набор всех возможных кнопок
-        const allPossibleButtons = this.getAllPossibleButtons();
-        const buttons = allPossibleButtons.map(delta => {
-            const isActive = activeDeltas.has(delta);
-            let type = 'neutral';
-            
-            // Определяем тип только для активных кнопок
-            if (isActive) {
-                if (nextWindow && delta === nextWindow.solutionDelta) {
-                    type = 'solution';
-                } else if (nextWindow && availableDeltas.includes(delta)) {
-                    // Проверяем, является ли это ловушкой
-                    const windowStart = nextWindow.start;
-                    const windowEnd = nextWindow.start + nextWindow.length - 1;
-                    const newPos = timer.current + delta;
-                    if (newPos >= windowStart && newPos <= windowEnd) {
-                        type = 'trap';
-                    } else {
-                        type = 'neutral';
-                    }
-                } else {
-                    type = 'neutral';
-                }
-            }
-            
-            return {
-                delta: delta,
-                type: type,
-                label: delta > 0 ? `+${delta}` : `${delta}`,
-                active: isActive
-            };
+
+        const makeButton = (delta) => ({
+            delta,
+            type: classForDelta(delta, nextWindow),
+            label: delta > 0 ? `+${delta}` : `${delta}`,
+            active: true
         });
-        
-        return buttons;
+
+        // Гарантия: ровно 2 кнопки и порядок (меньше слева, больше справа)
+        return [makeButton(leftDelta), makeButton(rightDelta)];
     }
 
 
@@ -662,6 +690,21 @@ class Director {
             }
         }
         return false;
+    }
+
+    // Фатальная зона для "зубов":
+    // окно длины L со start=S фатально на [S+0.2, S+L-0.1]
+    // (т.е. начинается, когда точка вошла на 20%, и заканчивается на 90% последней точки).
+    getFatalWindowAtPosition(position) {
+        const p = Number(position);
+        if (!Number.isFinite(p)) return null;
+        for (const w of this.dangerWindows) {
+            if (!w || typeof w.start !== 'number' || typeof w.length !== 'number') continue;
+            const start = w.start + 0.2;
+            const end = w.start + w.length - 0.1;
+            if (p >= start && p <= end) return w;
+        }
+        return null;
     }
 
     // Очистка прошедших окон и обновление кнопок

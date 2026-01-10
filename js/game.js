@@ -18,6 +18,17 @@ class Game {
         this.animationFrameId = null;
         this.lastUpdateTime = 0;
 
+        // Ограничение частоты действий игрока (иначе можно "заморозить" авто-тик и всегда выигрывать хоткеями)
+        this.nextActionAllowedAtMs = 0;
+        this.lastActionAtMs = 0;
+        this.lastActionCooldownMs = 0;
+
+        // Отложенная смерть (для анимации столкновения)
+        this.deathInProgress = false;
+        
+        // Смерть "после приземления" на хоткей-перемотке
+        this.pendingShiftDeath = null; // { animId, meta }
+
         // Защита от раннего клика PLAY и от повторных стартов.
         this.isInitialized = false;
         this.pendingStart = false;
@@ -121,7 +132,7 @@ class Game {
         // Game over по коллизии "danger касается головы пингвина"
         eventBus.on('PENGUIN_DANGER_COLLISION', (data) => {
             if (this.state !== 'RUNNING') return;
-            this.gameOver({ reason: 'PENGUIN_DANGER_COLLISION', dangerStart: data?.dangerStart });
+            this.beginDeath({ reason: 'PENGUIN_DANGER_COLLISION', dangerStart: data?.dangerStart });
         });
 
         // Горячие клавиши
@@ -129,7 +140,7 @@ class Game {
             if (this.state !== 'RUNNING') return;
             
             const key = e.key;
-            if (key >= '1' && key <= '4') {
+            if (key >= '1' && key <= '2') {
                 const index = parseInt(key) - 1;
                 const buttons = this.director.currentButtons;
                 if (buttons[index]) {
@@ -266,6 +277,12 @@ class Game {
         this.lastRenderedCurrent = null;
         this.lastPerksRender = 0;
         this.userInteracted = true; // Помечаем как взаимодействовал (клик на PLAY)
+
+        // Сброс ограничений/смерти для новой сессии
+        this.nextActionAllowedAtMs = 0;
+        this.lastActionAtMs = 0;
+        this.lastActionCooldownMs = 0;
+        this.deathInProgress = false;
         
         // Генерация начальных кнопок
         const gameState = this.getGameState();
@@ -379,6 +396,71 @@ class Game {
         
         // UI
         this.updateUI();
+
+        // Визуализация кулдауна на действиях (в реальном времени, независимо от перерендера кнопок)
+        const nowMs = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+        let cooldownProgress = 1;
+        if (this.lastActionCooldownMs > 0) {
+            cooldownProgress = Math.max(0, Math.min(1, (nowMs - this.lastActionAtMs) / this.lastActionCooldownMs));
+        }
+        if (this.renderer && typeof this.renderer.updateActionCooldown === 'function') {
+            this.renderer.updateActionCooldown(cooldownProgress);
+        }
+
+        // Конвейер: позиция ленты обновляется каждый кадр из дробной позиции таймера
+        if (this.renderer && typeof this.renderer.updateConveyor === 'function') {
+            this.renderer.updateConveyor(this.timer, this.director);
+        }
+
+        const shiftActiveBefore = !!this.timer?.shiftVisual;
+        // ВАЖНО: getPosition() может завершить shiftVisual (она вызывает getShiftOffset()).
+        const pos = (typeof this.timer.getPosition === 'function') ? this.timer.getPosition(nowMs) : this.timer.current;
+        const shiftActiveAfter = !!this.timer?.shiftVisual;
+
+        // Если хоткей-анимация закончилась в этот кадр — проверяем смерть по "приземлению"
+        if (this.state === 'RUNNING' && !this.deathInProgress && shiftActiveBefore && !shiftActiveAfter && this.pendingShiftDeath) {
+            const lastAnimId = this.timer?.shiftAnimId || 0;
+            if (this.pendingShiftDeath.animId === lastAnimId) {
+                this.beginDeath(this.pendingShiftDeath.meta);
+            }
+            this.pendingShiftDeath = null;
+        }
+
+        // Фатальная коллизия по дробной позиции:
+        // - для auto: проверяем всегда
+        // - для хоткей-анимации: НЕ проверяем "на пролёте", только на приземлении (выше)
+        if (this.state === 'RUNNING' && !this.deathInProgress && !shiftActiveBefore && !shiftActiveAfter && this.director?.getFatalWindowAtPosition) {
+            const w = this.director.getFatalWindowAtPosition(pos);
+            if (w) {
+                this.beginDeath({ reason: 'FATAL_DANGER', dangerStart: w.start, position: pos });
+            }
+        }
+    }
+
+    // Запуск "смерти" с задержкой (чтобы показать анимацию столкновения)
+    beginDeath(meta = null) {
+        if (this.deathInProgress) return;
+        if (this.state !== 'RUNNING') return;
+        this.deathInProgress = true;
+        this.state = 'DYING';
+
+        // Важно: при Game Over укус НЕ проигрываем — наоборот, останавливаем анимации,
+        // чтобы "опасная" точка была зафиксирована в момент достижения триггер-зоны.
+        try {
+            this.renderer?.stopAllBites?.();
+            this.renderer?.stopStripAnimation?.();
+            this.renderer?.stopCircleAnimation?.();
+        } catch (e) {
+            // ignore
+        }
+
+        // Блокируем дальнейшие действия игрока
+        this.nextActionAllowedAtMs = Infinity;
+
+        window.setTimeout(() => {
+            // Разрешаем gameOver из состояния DYING
+            this.gameOver(meta);
+        }, 500);
     }
     
     // Проверка необходимости рендера кнопок
@@ -422,18 +504,10 @@ class Game {
         if (dir !== 1) return;
 
         const current = (data && typeof data.current === 'number') ? data.current : this.timer.current;
-        const prev = current - 1;
-        if (prev < 0) return;
+        if (current < 0) return;
 
-        const w = this.director.dangerWindows.find(win => {
-            if (!win || typeof win.start !== 'number' || typeof win.length !== 'number') return false;
-            const end = win.start + win.length - 1;
-            return prev >= win.start && prev <= end;
-        });
-
-        if (w) {
-            this.gameOver({ reason: 'DANGER_LEFT_BITE_ZONE', dangerStart: w.start });
-        }
+        // Смерть синхронизирована с "half-entered" моментом в Renderer (конец движения ленты),
+        // через событие PENGUIN_DANGER_COLLISION.
     }
 
     // Обработка использования сдвига
@@ -453,6 +527,17 @@ class Game {
             return;
         }
 
+        // Кулдаун: не даём спамить и "застопорить" геймплей
+        const nowMs = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+        if (nowMs < this.nextActionAllowedAtMs) return;
+
+        const stepMs = Math.max(150, (this.timer?.calculateStepDuration?.() ?? 1.0) * 1000);
+        // примерно 1 действие на тик (чуть быстрее, чтобы было ощущение контроля)
+        const cdMs = stepMs * 0.75;
+        this.lastActionAtMs = nowMs;
+        this.lastActionCooldownMs = cdMs;
+        this.nextActionAllowedAtMs = nowMs + cdMs;
+
         // Воспроизведение звуков эффектов
         if (this.audio.isPlaying) {
             if (delta < 0) {
@@ -464,8 +549,27 @@ class Game {
             }
         }
 
+        const beforeAnimId = this.timer?.shiftAnimId || 0;
         this.timer.shift(delta);
         if (this.state !== 'RUNNING') return;
+
+        // Если конечная точка перемотки фатальна — планируем смерть ПОСЛЕ приземления (после окончания анимации).
+        // Во время перемещения смерть не должна срабатывать.
+        if (this.director?.getFatalWindowAtPosition && typeof this.timer.getTickDistanceProgress === 'function') {
+            const nowMs2 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+            const distProgress = this.timer.getTickDistanceProgress(nowMs2);
+            const landingPos = this.timer.current + (typeof this.timer.direction === 'number' ? this.timer.direction : 1) * distProgress;
+            const w = this.director.getFatalWindowAtPosition(landingPos);
+            const currentAnimId = this.timer?.shiftAnimId || beforeAnimId;
+            if (w) {
+                this.pendingShiftDeath = {
+                    animId: currentAnimId,
+                    meta: { reason: 'SHIFT_FATAL', dangerStart: w.start, position: landingPos }
+                };
+            } else {
+                this.pendingShiftDeath = null;
+            }
+        }
         
         // Обновление кнопок
         const gameState = this.getGameState();
@@ -528,6 +632,11 @@ class Game {
         
         this.state = 'RUNNING';
         this.lastUpdateTime = performance.now();
+        // После резюма снова разрешаем действия
+        this.nextActionAllowedAtMs = 0;
+        this.lastActionAtMs = 0;
+        this.lastActionCooldownMs = 0;
+        this.deathInProgress = false;
         // Возобновляем музыку
         this.audio.play();
         this.gameLoop();
@@ -536,9 +645,10 @@ class Game {
 
     // Game Over
     gameOver(meta = null) {
-        if (this.state !== 'RUNNING') return;
+        if (this.state !== 'RUNNING' && this.state !== 'DYING') return;
         
         this.state = 'GAME_OVER';
+        this.deathInProgress = false;
         this.audio.pause();
 
         // Запоминаем danger window, в котором произошла смерть,
@@ -654,6 +764,11 @@ class Game {
         
         this.state = 'RUNNING';
         this.lastUpdateTime = performance.now();
+        // После Continue снова разрешаем действия
+        this.nextActionAllowedAtMs = 0;
+        this.lastActionAtMs = 0;
+        this.lastActionCooldownMs = 0;
+        this.deathInProgress = false;
         // Запускаем музыку
         this.audio.play();
         this.gameLoop();
@@ -667,6 +782,12 @@ class Game {
         this.perks.reset();
         this.audio.reset();
         this.storage.clearSnapshot();
+
+        // Сброс ограничений/смерти
+        this.nextActionAllowedAtMs = 0;
+        this.lastActionAtMs = 0;
+        this.lastActionCooldownMs = 0;
+        this.deathInProgress = false;
         
         this.renderer.hideGameOverScreen();
         this.renderer.hidePauseScreen();

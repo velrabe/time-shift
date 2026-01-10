@@ -6,8 +6,12 @@
 
 :root {
     /* Layout tuning */
-    --circle-size: 42px;
+    --circle-size: 63px;
     --lane-shift-y: calc(var(--circle-size) * 0.25); /* quarter of circle height */
+
+    /* Penguin sizing (used for ice scaling too) */
+    --penguin-w: min(360px, 62vw);
+    --penguin-h: calc(var(--penguin-w) * (251 / 410)); /* head.svg viewBox: 410x251 */
 }
 
 body {
@@ -261,6 +265,43 @@ body {
     background: linear-gradient(180deg, #66b6ff 0%, #4ea2ff 60%, #3f96ff 100%);
 }
 
+/* Ice lane */
+#ice-layer {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 5;
+}
+
+#ice-bot {
+    position: absolute;
+    left: -10vw;
+    right: -10vw;
+    bottom: 0;
+    width: 120vw;
+    height: 50%;
+    display: block;
+    z-index: 5;
+    object-fit: cover;
+}
+
+/* Top ice should overlay the bottom ice slightly (lip) */
+#ice-top {
+    position: absolute;
+    left: -10vw;
+    right: -10vw;
+    width: 120vw;
+    height: calc(var(--penguin-h) * 1.5);
+    display: block;
+    z-index: 6;
+    /* Center the main ice slab vertically */
+    top: calc(50% - (var(--penguin-h) * 0.75));
+    bottom: auto;
+    transform: none;
+    filter: drop-shadow(0 14px 28px rgba(0, 0, 0, 0.18));
+    object-fit: cover;
+}
+
 /* Debug overlay (enable with ?debug=1) */
 #debug-overlay {
     position: absolute;
@@ -308,6 +349,7 @@ body {
     width: 100%;
     height: 100%;
     overflow: hidden;
+    z-index: 10; /* above ice */
 }
 
 #number-strip {
@@ -320,18 +362,37 @@ body {
 }
 
 .number-circle {
+    position: relative;
     width: var(--circle-size);
     height: var(--circle-size);
     border-radius: 50%;
     margin: 0 15px;
     transition: all 0.2s;
     flex-shrink: 0;
-}
-
-.number-circle.debug-number {
     display: flex;
     align-items: center;
     justify-content: center;
+    overflow: visible;
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+}
+
+.number-circle .food-img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    user-select: none;
+    pointer-events: none;
+    transform: scale(var(--food-scale, 1));
+    transform-origin: center center;
+    filter: none !important;
+}
+
+.number-circle.debug-number .debug-label {
+    position: absolute;
+    inset: auto 0 4px 0;
+    text-align: center;
     font-size: 12px;
     font-weight: 900;
     letter-spacing: 0.02em;
@@ -339,41 +400,28 @@ body {
     text-shadow: 0 1px 0 rgba(255, 255, 255, 0.55);
 }
 
+/* debug-number class kept for tooling; label is rendered as .debug-label */
+.number-circle.debug-number {
+    outline: 1px solid rgba(0, 0, 0, 0.08);
+}
+
 .number-circle.normal {
-    background: rgba(255, 255, 255, 0.85);
-    border: 4px solid rgba(0, 0, 0, 0.75);
-    box-shadow:
-        0 10px 22px rgba(0, 0, 0, 0.18),
-        inset 0 1px 0 rgba(255, 255, 255, 0.8);
-    opacity: 0.95;
+    opacity: 1;
 }
 
 .number-circle.danger {
-    background: rgba(255, 255, 255, 0.92);
-    border: 4px dashed rgba(0, 0, 0, 0.85);
-    box-shadow:
-        0 0 0 6px rgba(255, 64, 64, 0.22),
-        0 10px 22px rgba(0, 0, 0, 0.18),
-        inset 0 1px 0 rgba(255, 255, 255, 0.85);
     opacity: 1;
-    transform: scale(1.32);
+    transform: none;
 }
 
 .number-circle.passed {
-    background: rgba(255, 255, 255, 0.45);
-    border: 4px solid rgba(0, 0, 0, 0.18);
     opacity: 0.55;
-    box-shadow: none;
 }
 
 .number-circle.active {
     /* ВАЖНО: не меняем width/height, иначе ломаем геометрию ленты и центрирование */
-    transform: scale(1.18);
+    transform: none;
     opacity: 1;
-    background: rgba(255, 255, 255, 0.95);
-    box-shadow:
-        0 16px 34px rgba(0, 0, 0, 0.22),
-        inset 0 1px 0 rgba(255, 255, 255, 0.9);
 }
 
 /* Focus Zone */
@@ -389,7 +437,7 @@ body {
     display: flex;
     align-items: center;
     justify-content: flex-start;
-    z-index: 10;
+    z-index: 20; /* above ice + strip */
     pointer-events: none;
     transform-origin: center center;
 }
@@ -419,7 +467,7 @@ body {
 .focus-penguin {
     position: absolute;
     /* Keep the same aspect ratio as head.svg to avoid letterboxing on mobile */
-    width: min(360px, 62vw);
+    width: var(--penguin-w);
     aspect-ratio: 410 / 251; /* head.svg viewBox */
     height: auto;
     transform-origin: center center;
@@ -506,36 +554,74 @@ body {
     100% { transform: rotate(0deg); }
 }
 @keyframes penguinJawTopBig {
-    0% { transform: rotate(0deg); }
-    40% { transform: rotate(-42deg); }
-    100% { transform: rotate(0deg); }
+    /* Big bite: rotate + shift jaw to the right by the same lunge amount as penguin */
+    0% { transform: translateX(0px) rotate(0deg); }
+    40% { transform: translateX(var(--bite-lunge-big, 40px)) rotate(-42deg); }
+    100% { transform: translateX(0px) rotate(0deg); }
 }
 @keyframes penguinJawBotBig {
-    0% { transform: rotate(0deg); }
-    40% { transform: rotate(42deg); }
-    100% { transform: rotate(0deg); }
+    /* Big bite: rotate + shift jaw to the right by the same lunge amount as penguin */
+    0% { transform: translateX(0px) rotate(0deg); }
+    40% { transform: translateX(var(--bite-lunge-big, 40px)) rotate(42deg); }
+    100% { transform: translateX(0px) rotate(0deg); }
+}
+
+/* Head stretch during bite (height +10%) */
+@keyframes penguinHeadStretchSmall {
+    0% { transform: scaleY(1); }
+    35% { transform: scaleY(1.1); }
+    100% { transform: scaleY(1); }
+}
+
+@keyframes penguinHeadStretchBig {
+    0% { transform: scaleY(1); }
+    40% { transform: scaleY(1.1); }
+    100% { transform: scaleY(1); }
 }
 
 /* Head nudge during bite */
 @keyframes penguinNudgeSmall {
-    0% { transform: translateX(0); }
-    35% { transform: translateX(-3%); }
-    100% { transform: translateX(0); }
+    /* Base: shifted left by BIG lunge; during small bite: lunge forward by SMALL (1/5 of big) */
+    0% { transform: translateX(calc(-1 * var(--bite-lunge-big, 40px))); }
+    35% { transform: translateX(calc(-1 * var(--bite-lunge-big, 40px) + var(--bite-lunge-small, 8px))); }
+    100% { transform: translateX(calc(-1 * var(--bite-lunge-big, 40px))); }
 }
 
 @keyframes penguinNudgeBig {
-    0% { transform: translateX(0); }
-    40% { transform: translateX(-30%); }
-    100% { transform: translateX(0); }
+    /* Base: shifted left by BIG lunge; during big bite: lunge forward to 0 */
+    0% { transform: translateX(calc(-1 * var(--bite-lunge-big, 40px))); }
+    40% { transform: translateX(0px); }
+    100% { transform: translateX(calc(-1 * var(--bite-lunge-big, 40px))); }
 }
 
-.penguin.bite-small .penguin-jaw--top { animation: penguinJawTopSmall var(--bite-ms, 140ms) ease-in-out; }
-.penguin.bite-small .penguin-jaw--bot { animation: penguinJawBotSmall var(--bite-ms, 140ms) ease-in-out; }
-.penguin.bite-big .penguin-jaw--top { animation: penguinJawTopBig var(--bite-ms, 180ms) ease-in-out; }
-.penguin.bite-big .penguin-jaw--bot { animation: penguinJawBotBig var(--bite-ms, 180ms) ease-in-out; }
+.penguin {
+    /* Amount of forward lunge; base state shifted left by BIG lunge */
+    --bite-lunge-big: 40px;
+    --bite-lunge-small: calc(var(--bite-lunge-big) * 0.2);
+    transform: translateX(calc(-1 * var(--bite-lunge-big)));
+    will-change: transform;
+}
 
-.penguin.bite-small { animation: penguinNudgeSmall var(--bite-ms, 140ms) ease-in-out; }
-.penguin.bite-big { animation: penguinNudgeBig var(--bite-ms, 180ms) ease-in-out; }
+.penguin.bite-small .penguin-jaw--top { animation: penguinJawTopSmall var(--bite-ms, 140ms) ease-in-out var(--bite-delay-ms, 0ms); }
+.penguin.bite-small .penguin-jaw--bot { animation: penguinJawBotSmall var(--bite-ms, 140ms) ease-in-out var(--bite-delay-ms, 0ms); }
+.penguin.bite-big .penguin-jaw--top { animation: penguinJawTopBig var(--bite-ms, 180ms) ease-in-out var(--bite-delay-ms, 0ms); }
+.penguin.bite-big .penguin-jaw--bot { animation: penguinJawBotBig var(--bite-ms, 180ms) ease-in-out var(--bite-delay-ms, 0ms); }
+
+.penguin.bite-small { animation: penguinNudgeSmall var(--bite-ms, 140ms) ease-in-out var(--bite-delay-ms, 0ms); }
+.penguin.bite-big { animation: penguinNudgeBig var(--bite-ms, 180ms) ease-in-out var(--bite-delay-ms, 0ms); }
+
+/* Head height pulse during bite */
+.penguin.bite-small #penguin-head,
+.penguin.bite-small .penguin-head {
+    transform-origin: 50% 50%;
+    animation: penguinHeadStretchSmall var(--bite-ms, 140ms) ease-in-out var(--bite-delay-ms, 0ms);
+}
+
+.penguin.bite-big #penguin-head,
+.penguin.bite-big .penguin-head {
+    transform-origin: 50% 50%;
+    animation: penguinHeadStretchBig var(--bite-ms, 180ms) ease-in-out var(--bite-delay-ms, 0ms);
+}
 
 
 /* Controls */
@@ -576,7 +662,7 @@ body {
 }
 
 .control-btn:disabled:hover {
-    transform: none;
+    transform: translateY(0) scale(var(--cd-scale, 1));
     background: rgba(255, 255, 255, 0.15);
 }
 
@@ -621,18 +707,21 @@ body {
     box-shadow:
         0 16px 30px rgba(0, 0, 0, 0.22),
         inset 0 1px 0 rgba(255, 255, 255, 0.85);
+    /* action cooldown feedback (set via JS as CSS vars) */
+    opacity: var(--cd-opacity, 1);
+    transform: translateY(0) scale(var(--cd-scale, 1));
 }
 
 .control-btn:hover {
     filter: brightness(1.03);
-    transform: translateY(-2px);
+    transform: translateY(-2px) scale(var(--cd-scale, 1));
     box-shadow:
         0 18px 34px rgba(0, 0, 0, 0.24),
         inset 0 1px 0 rgba(255, 255, 255, 0.85);
 }
 
 .control-btn:active {
-    transform: translateY(0);
+    transform: translateY(0) scale(var(--cd-scale, 1));
     box-shadow: none;
 }
 

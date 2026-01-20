@@ -69,13 +69,9 @@ class Director {
             return end < timer.current;
         });
 
-        // Начисление streak: 1 очко за КАЖДОЕ danger window (независимо от длины окна)
+        // Стрик теперь считается от реально съеденных "больших" объектов (FOOD_EATEN),
+        // поэтому здесь streak НЕ трогаем — только внутреннюю механику и аналитику.
         if (passedWindows.length > 0) {
-            // Основной путь: напрямую обновляем PerkSystem (не зависит от порядка подписок)
-            if (perks && typeof perks.addStreak === 'function') {
-                perks.addStreak(passedWindows.length);
-            }
-
             // Сигнал для UI/аналитики (не должен менять streak сам по себе)
             eventBus.emit('DANGER_PASSED', { count: passedWindows.length });
             // Обновляем внутреннюю механику Director (TTL ControlSet и т.п.) по каждому окну

@@ -265,6 +265,50 @@ body {
     background: linear-gradient(180deg, #66b6ff 0%, #4ea2ff 60%, #3f96ff 100%);
 }
 
+/* Background layer (hills and clouds) */
+#background-layer {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 1;
+    overflow: hidden;
+}
+
+#hills {
+    position: absolute;
+    /* Нижний край hills прижат к центру экрана (к центру ice-top) */
+    bottom: 54%;
+    /* Делаем, как у ice: холмы шире экрана и обрезаются контейнером */
+    left: -10vw;
+    right: -10vw;
+    width: 120vw;
+    /* Высота зависит от высоты экрана, чтобы масштаб был консистентным */
+    height: 40vh;
+    object-fit: cover;      /* заполняем весь rect, лишнее обрезается */
+    object-position: bottom;/* прижимаем горы к нижнему краю этого rect */
+    z-index: 1;
+}
+
+#clouds-container {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+}
+
+.cloud {
+    position: absolute;
+    pointer-events: none;
+    user-select: none;
+    opacity: 0.7;
+    will-change: transform;
+}
+
+.cloud img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+}
+
 /* Ice lane */
 #ice-layer {
     position: absolute;
@@ -277,7 +321,7 @@ body {
     position: absolute;
     left: -10vw;
     right: -10vw;
-    bottom: 0;
+    bottom: -8vh;
     width: 120vw;
     height: 50%;
     display: block;
@@ -291,13 +335,13 @@ body {
     left: -10vw;
     right: -10vw;
     width: 120vw;
-    height: calc(var(--penguin-h) * 1.5);
+    /* Высота как в оригинале: примерно 18-20% высоты экрана */
+    height: 20vh;
     display: block;
     z-index: 6;
-    /* Center the main ice slab vertically */
-    top: calc(50% - (var(--penguin-h) * 0.75));
-    bottom: auto;
-    transform: none;
+    /* Чуть ниже центра экрана (~5%) */
+    top: 55%;
+    transform: translateY(-50%);
     filter: drop-shadow(0 14px 28px rgba(0, 0, 0, 0.18));
     object-fit: cover;
 }
@@ -363,10 +407,13 @@ body {
 
 .number-circle {
     position: relative;
-    width: var(--circle-size);
-    height: var(--circle-size);
-    border-radius: 50%;
-    margin: 0 15px;
+    /* Фиксированный слот: движение ленты использует постоянный шаг */
+    width: calc(var(--circle-size) * 3.2);
+    height: calc(var(--circle-size) * 2.2);
+    /* Убираем круглое обрамление */
+    border-radius: 0;
+    /* Gap между объектами делаем в 2–3 раза меньше */
+    margin: 0 6px;
     transition: all 0.2s;
     flex-shrink: 0;
     display: flex;
@@ -379,14 +426,30 @@ body {
 }
 
 .number-circle .food-img {
-    width: 100%;
-    height: 100%;
+    /* Размеры задаются из JS (по naturalWidth/Height + единый масштаб) */
+    width: auto;
+    height: auto;
+    max-width: 100%;
+    max-height: 100%;
     object-fit: contain;
     user-select: none;
     pointer-events: none;
     transform: scale(var(--food-scale, 1));
     transform-origin: center center;
     filter: none !important;
+}
+
+/* Важно: никаких "×2" для danger — размер задаётся ассетом (-b) и глобальным масштабом */
+
+.number-circle.debug-number .debug-label {
+    color: inherit;
+}
+
+/* Красные цифры для объектов, которые триггерят game over */
+.number-circle.game-over-trigger .debug-label {
+    color: #ff0000 !important;
+    font-weight: bold;
+    text-shadow: 0 0 3px rgba(255, 0, 0, 0.8);
 }
 
 .number-circle.debug-number .debug-label {
@@ -402,7 +465,8 @@ body {
 
 /* debug-number class kept for tooling; label is rendered as .debug-label */
 .number-circle.debug-number {
-    outline: 1px solid rgba(0, 0, 0, 0.08);
+    /* Контурные "слоты" мешают — убираем */
+    outline: none;
 }
 
 .number-circle.normal {
@@ -418,6 +482,11 @@ body {
     opacity: 0.55;
 }
 
+/* Успешно "съедено": слот остаётся (для стабильного шага ленты), но спрайт исчезает */
+.number-circle.consumed {
+    opacity: 0;
+}
+
 .number-circle.active {
     /* ВАЖНО: не меняем width/height, иначе ломаем геометрию ленты и центрирование */
     transform: none;
@@ -429,8 +498,8 @@ body {
     position: absolute;
     width: 200px;
     height: 200px;
-    /* Move indicator to the left side (reference-style layout) */
-    left: 0;
+    /* Сдвигаем всю конструкцию головы и челюстей ещё левее */
+    left: 0px;
     top: 50%;
     /* Lift penguin relative to the lane by 1/4 circle height */
     transform: translateY(-50%) translateY(calc(var(--lane-shift-y) * -1));
@@ -504,15 +573,20 @@ body {
    Defaults are derived from the original head viewBox (410x251) and jaw viewBoxes.
    Adjust these CSS vars to calibrate composition. */
 .penguin {
-    --jaw-top-w: 50.7%;
-    --jaw-top-h: 45.1%;
-    --jaw-bot-w: 48.5%;
-    --jaw-bot-h: 44.1%;
-    /* Variant B: final positions (edit these directly) */
-    --jaw-top-x: 73.3%;
-    --jaw-top-y: 19.8%;
-    --jaw-bot-x: 73.3%;
-    --jaw-bot-y: 45.4%;
+    /* Соотношения размеров челюстей к голове, основанные на оригинальных SVG:
+       head: 410x251
+       top jaw (normal): 272.82x86.44  → ~66.6% ширины, ~34.4% высоты
+       top jaw (game over): 161.36x93.32 (сама картинка уже уже, но контейнер остаётся тем же) */
+    --jaw-top-w: 66.6%;
+    --jaw-top-h: 34.4%;
+    /* Для нижней челюсти применяем те же пропорции, чтобы она оставалась сопоставимой по размеру с верхней */
+    --jaw-bot-w: 63.8%;
+    --jaw-bot-h: 33.6%;
+    /* Позиции челюстей относительно головы (чуть левее и ниже) */
+    --jaw-top-x: 47%;
+    --jaw-top-y: 23.5%;
+    --jaw-bot-x: 45%; /* ещё левее */
+    --jaw-bot-y: 39%;
 }
 
 .penguin-jaw {
@@ -544,26 +618,30 @@ body {
 
 /* Bite animations (small / big). Trigger by toggling classes on #penguin-root */
 @keyframes penguinJawTopSmall {
-    0% { transform: rotate(0deg); }
-    35% { transform: rotate(-12deg); }
-    100% { transform: rotate(0deg); }
+    0% { transform: translateX(0px) rotate(0deg); }
+    /* При открытии верхняя челюсть слегка уезжает вправо */
+    35% { transform: translateX(4px) rotate(-18deg); }
+    100% { transform: translateX(0px) rotate(0deg); }
 }
 @keyframes penguinJawBotSmall {
-    0% { transform: rotate(0deg); }
-    35% { transform: rotate(12deg); }
-    100% { transform: rotate(0deg); }
+    0% { transform: translateX(0px) rotate(0deg); }
+    /* Лёгкий сдвиг нижней челюсти вправо при малом укусе */
+    35% { transform: translateX(4px) rotate(4deg); }
+    100% { transform: translateX(0px) rotate(0deg); }
 }
 @keyframes penguinJawTopBig {
-    /* Big bite: rotate + shift jaw to the right by the same lunge amount as penguin */
+    /* Big bite: только поворот, без смещения (уменьшен для меньшего открытия) */
     0% { transform: translateX(0px) rotate(0deg); }
-    40% { transform: translateX(var(--bite-lunge-big, 40px)) rotate(-42deg); }
-    100% { transform: translateX(0px) rotate(0deg); }
+    /* При большом укусе верхняя челюсть тоже слегка двигается вправо */
+    40% { transform: translateX(20px) rotate(-28deg); }
+    100% { transform: translateX(5px) rotate(0deg); }
 }
 @keyframes penguinJawBotBig {
-    /* Big bite: rotate + shift jaw to the right by the same lunge amount as penguin */
+    /* Big bite: только поворот, без смещения (уменьшен для меньшего открытия) */
     0% { transform: translateX(0px) rotate(0deg); }
-    40% { transform: translateX(var(--bite-lunge-big, 40px)) rotate(42deg); }
-    100% { transform: translateX(0px) rotate(0deg); }
+    /* Нижняя челюсть тоже чуть уезжает вправо, но меньше чем верхняя */
+    40% { transform: translateX(14px) rotate(10deg); }
+    100% { transform: translateX(4px) rotate(0deg); }
 }
 
 /* Head stretch during bite (height +10%) */
@@ -579,26 +657,24 @@ body {
     100% { transform: scaleY(1); }
 }
 
-/* Head nudge during bite */
+/* Head nudge during bite - отключено (голова статична) */
 @keyframes penguinNudgeSmall {
-    /* Base: shifted left by BIG lunge; during small bite: lunge forward by SMALL (1/5 of big) */
-    0% { transform: translateX(calc(-1 * var(--bite-lunge-big, 40px))); }
-    35% { transform: translateX(calc(-1 * var(--bite-lunge-big, 40px) + var(--bite-lunge-small, 8px))); }
-    100% { transform: translateX(calc(-1 * var(--bite-lunge-big, 40px))); }
+    0% { transform: translateX(0px); }
+    35% { transform: translateX(0px); }
+    100% { transform: translateX(0px); }
 }
 
 @keyframes penguinNudgeBig {
-    /* Base: shifted left by BIG lunge; during big bite: lunge forward to 0 */
-    0% { transform: translateX(calc(-1 * var(--bite-lunge-big, 40px))); }
+    0% { transform: translateX(0px); }
     40% { transform: translateX(0px); }
-    100% { transform: translateX(calc(-1 * var(--bite-lunge-big, 40px))); }
+    100% { transform: translateX(0px); }
 }
 
 .penguin {
-    /* Amount of forward lunge; base state shifted left by BIG lunge */
+    /* Голова статична, без смещения */
     --bite-lunge-big: 40px;
     --bite-lunge-small: calc(var(--bite-lunge-big) * 0.2);
-    transform: translateX(calc(-1 * var(--bite-lunge-big)));
+    transform: translateX(0px);
     will-change: transform;
 }
 

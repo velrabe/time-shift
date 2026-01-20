@@ -52,6 +52,16 @@ class Renderer {
         this._conveyorBiteActive = false;
         this._conveyorBiteTickCounter = -1;
         
+        // Новая физическая система: постоянное движение ленты
+        // Базовая скорость ленты (ускоряется через таймер.getSpeedMultiplier()).
+        this._beltSpeed = 0.08; // пикселей в миллисекунду (чуть быстрее, чем раньше)
+        this._beltPosition = 0; // текущая позиция ленты в пикселях
+        this._lastBeltUpdateTime = 0;
+        this._mouthOpen = false; // состояние рта (открыт для большого укуса)
+        this._mouthOpenUntil = 0; // время до которого рот открыт
+        this._lastAutoBiteTime = 0; // время последнего авто-укуса
+        this._autoBiteCooldown = 200; // кулдаун между авто-укусами (мс)
+        
         // Food sprites for strip circles (normal = -s, danger = -b)
         // NOTE: browser can't list /img, so we keep an explicit list.
         this.foodBases = ['f1', 'f2', 'f3', 'f4', 'f5'];
@@ -59,7 +69,142 @@ class Renderer {
         this.setupFocusZone();
         this.setupEventListeners();
         this.setupFocusZoneAnimation();
+        this.autoCalibratePenguinProportions();
         this.setupDebugOverlay();
+        this.setupClouds();
+
+        // Ограниченные debug-логи (без спама каждый кадр)
+        this._dbg = {
+            enabled: this.debug,
+            max: 40,
+            count: 0,
+            lastAtByKey: new Map(),
+            lastTrackedValue: null,
+            lastTrackedWasColliding: false,
+            lastDeathValue: null
+        };
+    }
+
+    dbgLog(key, payload, minIntervalMs = 250) {
+        if (!this._dbg?.enabled) return;
+        if (this._dbg.count >= this._dbg.max) return;
+        const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+        const lastAt = this._dbg.lastAtByKey.get(key) || 0;
+        if (now - lastAt < minIntervalMs) return;
+        this._dbg.lastAtByKey.set(key, now);
+        this._dbg.count += 1;
+        // eslint-disable-next-line no-console
+        console.log(`[DBG:${key}]`, payload);
+    }
+
+    // Автокалибровка пропорций головы и челюстей по реальным SVG-ассетам,
+    // чтобы размеры челюстей совпадали с оригиналом относительно головы.
+    autoCalibratePenguinProportions() {
+        const apply = () => {
+            const parts = this.getPenguinParts();
+            if (!parts?.root) return;
+            const head = parts.head || document.getElementById('penguin-head');
+            const topJaw = parts.topJaw || document.getElementById('penguin-top-jaw');
+            const botJaw = parts.botJaw || document.getElementById('penguin-bot-jaw');
+            if (!head || !topJaw || !botJaw) return;
+
+            const ready =
+                head.naturalWidth > 0 && head.naturalHeight > 0 &&
+                topJaw.naturalWidth > 0 && topJaw.naturalHeight > 0 &&
+                botJaw.naturalWidth > 0 && botJaw.naturalHeight > 0;
+            if (!ready) return;
+
+            const wHead = head.naturalWidth;
+            const hHead = head.naturalHeight;
+            if (!wHead || !hHead) return;
+
+            const rootStyle = parts.root.style;
+            const setRatios = (jawImg, wVar, hVar) => {
+                const rw = jawImg.naturalWidth / wHead;
+                const rh = jawImg.naturalHeight / hHead;
+                // Пропорции берем напрямую из ассетов; позиции (x/y) не трогаем.
+                rootStyle.setProperty(wVar, `${(rw * 100).toFixed(2)}%`);
+                rootStyle.setProperty(hVar, `${(rh * 100).toFixed(2)}%`);
+            };
+
+            setRatios(topJaw, '--jaw-top-w', '--jaw-top-h');
+            setRatios(botJaw, '--jaw-bot-w', '--jaw-bot-h');
+        };
+
+        // Пытаемся сразу, если ассеты уже загружены
+        apply();
+
+        // Если ещё не загружены — один раз повесим onload
+        const parts = this.getPenguinParts();
+        const imgs = [
+            parts?.head || document.getElementById('penguin-head'),
+            parts?.topJaw || document.getElementById('penguin-top-jaw'),
+            parts?.botJaw || document.getElementById('penguin-bot-jaw')
+        ].filter(Boolean);
+
+        imgs.forEach((img) => {
+            if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+                return;
+            }
+            img.addEventListener('load', apply, { once: true });
+        });
+    }
+
+    // Анимация "успешного поедания": предмет резко улетает в рот и растворяется
+    animateEatIntoMouth(circleEl, containerEl, containerRect, targetX, targetY) {
+        if (!circleEl || !containerEl || !containerRect) return;
+        const imgEl = circleEl.querySelector?.('img.food-img');
+        if (!imgEl) return;
+        const imgRect = imgEl.getBoundingClientRect?.();
+        if (!imgRect) return;
+
+        const startLeft = imgRect.left - containerRect.left;
+        const startTop = imgRect.top - containerRect.top;
+        const w = imgRect.width;
+        const h = imgRect.height;
+        const startCx = startLeft + w / 2;
+        const startCy = startTop + h / 2;
+        const dx = targetX - startCx;
+        const dy = targetY - startCy;
+
+        // Клонируем картинку поверх сцены, чтобы анимация не зависела от transform ленты
+        const fx = document.createElement('img');
+        fx.src = imgEl.currentSrc || imgEl.src;
+        fx.alt = '';
+        fx.draggable = false;
+        fx.style.position = 'absolute';
+        fx.style.left = `${startLeft}px`;
+        fx.style.top = `${startTop}px`;
+        fx.style.width = `${w}px`;
+        fx.style.height = `${h}px`;
+        fx.style.pointerEvents = 'none';
+        fx.style.zIndex = '60'; // выше ленты/льда, ниже оверлеев
+        fx.style.willChange = 'transform, opacity, filter';
+        fx.style.transformOrigin = '50% 50%';
+        fx.style.transform = 'translate(0px, 0px) scale(1)';
+        fx.style.opacity = '1';
+        fx.style.filter = 'none';
+        fx.style.transition = 'transform 180ms cubic-bezier(0.2, 0.9, 0.2, 1), opacity 180ms linear, filter 180ms linear';
+
+        containerEl.appendChild(fx);
+
+        // Прячем оригинал, но оставляем слот (важно для стабильного шага ленты)
+        imgEl.style.opacity = '0';
+        circleEl.classList.add('passed', 'consumed');
+
+        requestAnimationFrame(() => {
+            // Быстрый "вылет" в рот + растворение.
+            // Увеличиваем горизонтальное расстояние в 2 раза, чтобы предмет пролетал дальше влево.
+            const extraFactor = 2;
+            const finalDx = dx * extraFactor;
+            fx.style.transform = `translate(${finalDx.toFixed(2)}px, ${dy.toFixed(2)}px) scale(0.12)`;
+            fx.style.opacity = '0';
+            fx.style.filter = 'blur(1px)';
+        });
+
+        window.setTimeout(() => {
+            try { fx.remove(); } catch (e) { /* ignore */ }
+        }, 240);
     }
 
     // Визуальный фидбек кулдауна на действиях (2 кнопки)
@@ -130,6 +275,12 @@ class Renderer {
             img.draggable = false;
             img.decoding = 'async';
             img.loading = 'eager';
+            
+            // После загрузки изображения обновляем размер контейнера под реальные пропорции
+            img.addEventListener('load', () => {
+                this.updateFoodContainerSize(circleEl, img);
+            });
+            
             img.addEventListener('error', () => {
                 // If -b is missing, fallback to -s to avoid broken images
                 const base = circleEl.dataset.foodBase || 'f1';
@@ -148,6 +299,40 @@ class Renderer {
         // default to small
         img.dataset.variant = 's';
         img.src = this.getFoodSrc(base, 's');
+        
+        // Если изображение уже загружено, обновляем размер сразу
+        if (img.complete && img.naturalWidth > 0) {
+            this.updateFoodContainerSize(circleEl, img);
+        }
+    }
+
+    // Обновление размера под реальные пропорции ассета (в "оригинальных" размерах, с единым масштабом)
+    updateFoodContainerSize(circleEl, img) {
+        if (!circleEl || !img) return;
+        
+        const naturalWidth = img.naturalWidth;
+        const naturalHeight = img.naturalHeight;
+        if (naturalWidth === 0 || naturalHeight === 0) return;
+
+        // Один глобальный коэффициент масштаба для ВСЕХ еды, чтобы относительные размеры совпадали с оригиналом.
+        // Подобрано по median высоты f*-s (169,154,149,257,217,137) => 161.5.
+        const baseUnit = parseFloat(getComputedStyle(circleEl).getPropertyValue('--circle-size')) || 63;
+        const baselineSmallHeight = 161.5;
+        // Глобальный масштаб подгоняет всё под circle-size; дополнительный
+        // коэффициент 0.5 уменьшает ВСЕ объекты на ленте в 2 раза.
+        const globalScale = (baseUnit / baselineSmallHeight) * 0.5;
+
+        const targetWidth = naturalWidth * globalScale;
+        const targetHeight = naturalHeight * globalScale;
+
+        // Фиксируем размеры у изображения, а не у элемента слота,
+        // иначе ломается "питч" ленты (движение/рецикл завязаны на постоянный шаг).
+        img.style.width = `${targetWidth}px`;
+        img.style.height = `${targetHeight}px`;
+
+        // Реальные размеры для физики/дебага
+        circleEl.dataset.actualWidth = String(targetWidth);
+        circleEl.dataset.actualHeight = String(targetHeight);
     }
 
     updateFoodVariant(circleEl, isDanger) {
@@ -157,12 +342,27 @@ class Renderer {
         if (isDanger) {
             img.dataset.variant = 'b';
             img.src = this.getFoodSrc(base, 'b');
-            circleEl.style.setProperty('--food-scale', '2');
+            circleEl.classList.add('danger');
+            circleEl.classList.remove('normal');
         } else {
             img.dataset.variant = 's';
             img.src = this.getFoodSrc(base, 's');
-            circleEl.style.setProperty('--food-scale', '1');
+            circleEl.classList.add('normal');
+            circleEl.classList.remove('danger');
         }
+        circleEl.style.setProperty('--food-scale', '1');
+        
+        // Обновляем размер контейнера после загрузки нового изображения
+        if (img.complete && img.naturalWidth > 0) {
+            this.updateFoodContainerSize(circleEl, img);
+        } else {
+            img.addEventListener('load', () => {
+                this.updateFoodContainerSize(circleEl, img);
+            }, { once: true });
+        }
+        
+        // Сбрасываем флаг обработки при изменении варианта
+        circleEl.dataset.processed = 'false';
     }
 
     setupDebugOverlay() {
@@ -188,8 +388,20 @@ class Renderer {
             return el;
         };
 
+        // Контейнер для границ всех объектов на ленте
+        let objectsContainer = overlay.querySelector('#debug-objects-container');
+        if (!objectsContainer) {
+            objectsContainer = document.createElement('div');
+            objectsContainer.id = 'debug-objects-container';
+            objectsContainer.style.position = 'absolute';
+            objectsContainer.style.inset = '0';
+            objectsContainer.style.pointerEvents = 'none';
+            overlay.appendChild(objectsContainer);
+        }
+
         this.debugEls = {
             overlay,
+            objectsContainer,
             penguinBox: ensure('debug-penguin-box', 'debug-box debug-penguin'),
             jawTopBox: ensure('debug-jaw-top-box', 'debug-box debug-jaw-top'),
             jawBotBox: ensure('debug-jaw-bot-box', 'debug-box debug-jaw-bot'),
@@ -199,9 +411,55 @@ class Renderer {
         };
     }
 
+    // Обновление границ объекта на ленте для debug (один объект: ближайший/в коллизии)
+    updateDebugObjectBoxes(trackedCircle, containerRect, isColliding = false) {
+        if (!this.debug || !this.debugEls?.objectsContainer) return;
+        
+        const container = this.debugEls.objectsContainer;
+        // Очищаем старые боксы
+        container.innerHTML = '';
+        
+        // Показываем только один "трекаемый" объект (если есть)
+        if (!trackedCircle) return;
+        
+        const img = trackedCircle.querySelector('img.food-img');
+        const imgRect = img?.getBoundingClientRect?.() || null;
+
+        // В physics-режиме размеры еды задаются непосредственно img (через updateFoodContainerSize),
+        // поэтому самый точный hitbox — это boundingClientRect самой картинки.
+        const left = (imgRect ? imgRect.left : trackedCircle.getBoundingClientRect().left) - containerRect.left;
+        const top = (imgRect ? imgRect.top : trackedCircle.getBoundingClientRect().top) - containerRect.top;
+        const width = imgRect ? imgRect.width : trackedCircle.getBoundingClientRect().width;
+        const height = imgRect ? imgRect.height : trackedCircle.getBoundingClientRect().height;
+        
+        const box = document.createElement('div');
+        box.className = 'debug-box';
+        box.style.position = 'absolute';
+        // Позиционируем по центру изображения
+        box.style.left = `${left}px`;
+        box.style.top = `${top}px`;
+        box.style.width = `${width}px`;
+        box.style.height = `${height}px`;
+        
+        // Цвет: danger = красный, normal = синий. Яркость — если реально в коллизии.
+        const isDanger = trackedCircle.classList.contains('danger');
+        if (isDanger) {
+            box.style.borderColor = isColliding ? 'rgba(255, 0, 0, 1)' : 'rgba(255, 0, 0, 0.35)';
+            box.style.background = isColliding ? 'rgba(255, 0, 0, 0.14)' : 'rgba(255, 0, 0, 0.04)';
+        } else {
+            box.style.borderColor = isColliding ? 'rgba(0, 150, 255, 1)' : 'rgba(0, 150, 255, 0.35)';
+            box.style.background = isColliding ? 'rgba(0, 150, 255, 0.14)' : 'rgba(0, 150, 255, 0.04)';
+        }
+        box.style.borderWidth = isColliding ? '3px' : '1px';
+        box.style.borderStyle = 'solid';
+        box.style.boxSizing = 'border-box';
+        
+        container.appendChild(box);
+    }
+
     updateDebugOverlay({ containerRect, penguinRect, jawTopRect, jawBotRect, dangerRect, biteX, anchorX }) {
         if (!this.debug || !this.debugEls) return;
-        const { penguinBox, jawTopBox, jawBotBox, dangerBox, biteLine, anchorLine } = this.debugEls;
+        const { jawTopBox, jawBotBox, dangerBox, biteLine, penguinBox, anchorLine } = this.debugEls;
 
         const placeBox = (box, rect) => {
             if (!rect) {
@@ -209,10 +467,61 @@ class Renderer {
                 return;
             }
             box.style.display = 'block';
-            box.style.left = `${rect.left - containerRect.left}px`;
-            box.style.top = `${rect.top - containerRect.top}px`;
-            box.style.width = `${rect.width}px`;
-            box.style.height = `${rect.height}px`;
+            // Поддерживаем как DOMRect, так и объект с left/top/width/height
+            const left = rect.left !== undefined ? rect.left : (rect.x !== undefined ? rect.x : 0);
+            const top = rect.top !== undefined ? rect.top : (rect.y !== undefined ? rect.y : 0);
+            const width = rect.width !== undefined ? rect.width : ((rect.right !== undefined && rect.left !== undefined) ? (rect.right - rect.left) : 0);
+            const height = rect.height !== undefined ? rect.height : ((rect.bottom !== undefined && rect.top !== undefined) ? (rect.bottom - rect.top) : 0);
+            
+            box.style.left = `${left - containerRect.left}px`;
+            box.style.top = `${top - containerRect.top}px`;
+            box.style.width = `${width}px`;
+            box.style.height = `${height}px`;
+        };
+        
+        // Для челюстей используем реальные размеры изображений (они уже img элементы)
+        const placeJawBox = (box, jawEl, rect) => {
+            if (!rect || !jawEl) {
+                box.style.display = 'none';
+                return;
+            }
+            
+            // Челюсти уже являются img элементами напрямую
+            let actualWidth = rect.width;
+            let actualHeight = rect.height;
+            
+            // Если это img элемент, используем его реальные пропорции
+            if (jawEl.tagName === 'IMG' && jawEl.naturalWidth > 0 && jawEl.naturalHeight > 0) {
+                // Вычисляем реальные размеры с учетом object-fit: contain
+                // CSS уже масштабирует изображение, сохраняя пропорции
+                const computedStyle = window.getComputedStyle(jawEl);
+                const cssWidth = parseFloat(computedStyle.width);
+                const cssHeight = parseFloat(computedStyle.height);
+                
+                // Используем CSS размеры, которые уже учитывают пропорции
+                // Но нужно учесть, что object-fit: contain может оставлять пустое пространство
+                const aspectRatio = jawEl.naturalWidth / jawEl.naturalHeight;
+                const containerAspectRatio = cssWidth / cssHeight;
+                
+                if (aspectRatio > containerAspectRatio) {
+                    // Изображение ограничено по ширине
+                    actualWidth = cssWidth;
+                    actualHeight = cssWidth / aspectRatio;
+                } else {
+                    // Изображение ограничено по высоте
+                    actualWidth = cssHeight * aspectRatio;
+                    actualHeight = cssHeight;
+                }
+            }
+            
+            box.style.display = 'block';
+            // Центрируем бокс относительно реального изображения
+            const centerX = rect.left + rect.width / 2;
+            const centerY = rect.top + rect.height / 2;
+            box.style.left = `${centerX - actualWidth / 2 - containerRect.left}px`;
+            box.style.top = `${centerY - actualHeight / 2 - containerRect.top}px`;
+            box.style.width = `${actualWidth}px`;
+            box.style.height = `${actualHeight}px`;
         };
 
         const placeLine = (line, x) => {
@@ -226,12 +535,27 @@ class Renderer {
             line.style.height = `${containerRect.height}px`;
         };
 
-        placeBox(penguinBox, penguinRect);
-        placeBox(jawTopBox, jawTopRect);
-        placeBox(jawBotBox, jawBotRect);
+        // Скрываем боксы, которые не участвуют в коллизии
+        if (penguinBox) penguinBox.style.display = 'none';
+        if (anchorLine) anchorLine.style.display = 'none';
+        
+        // Показываем только боксы, участвующие в коллизии:
+        // 1. Челюсти (всегда участвуют в коллизии)
+        const parts = this.getPenguinParts();
+        if (parts) {
+            placeJawBox(jawTopBox, parts.topJaw, jawTopRect);
+            placeJawBox(jawBotBox, parts.botJaw, jawBotRect);
+        } else {
+            placeBox(jawTopBox, jawTopRect);
+            placeBox(jawBotBox, jawBotRect);
+        }
+        
+        // 2. Объект в коллизии (если есть)
         placeBox(dangerBox, dangerRect);
+        
+        // 3. Линия укуса (правая граница челюсти - показывает где заканчивается зона коллизии)
+        // Game over происходит когда объект пересекается с челюстью (не просто проходит эту линию)
         placeLine(biteLine, biteX);
-        placeLine(anchorLine, anchorX);
     }
 
     getPenguinParts() {
@@ -244,19 +568,42 @@ class Renderer {
     }
 
     // Правая граница "рта" = max(right) верхней/нижней челюсти. Fallback: правая граница контейнера пингвина.
+    // Использует реальные размеры изображений челюстей для точной коллизии
     getPenguinMouthRightX(containerEl) {
         if (!containerEl) return 0;
         const containerRect = containerEl.getBoundingClientRect();
         const parts = this.getPenguinParts();
         if (!parts) return 0;
 
+        // Получаем реальные размеры изображений челюстей
+        const topJawImg = parts.topJaw?.querySelector?.('img') || parts.topJaw;
+        const botJawImg = parts.botJaw?.querySelector?.('img') || parts.botJaw;
+        
         const topRect = parts.topJaw?.getBoundingClientRect?.();
         const botRect = parts.botJaw?.getBoundingClientRect?.();
         const rootRect = parts.root?.getBoundingClientRect?.();
 
+        // Используем реальные размеры изображений, если доступны
         let right = null;
-        if (topRect) right = right == null ? topRect.right : Math.max(right, topRect.right);
-        if (botRect) right = right == null ? botRect.right : Math.max(right, botRect.right);
+        if (topRect) {
+            // Если есть изображение, используем его реальную ширину
+            if (topJawImg && topJawImg.naturalWidth > 0) {
+                const scale = topRect.width / topJawImg.naturalWidth;
+                const actualRight = topRect.left + (topJawImg.naturalWidth * scale);
+                right = right == null ? actualRight : Math.max(right, actualRight);
+            } else {
+                right = right == null ? topRect.right : Math.max(right, topRect.right);
+            }
+        }
+        if (botRect) {
+            if (botJawImg && botJawImg.naturalWidth > 0) {
+                const scale = botRect.width / botJawImg.naturalWidth;
+                const actualRight = botRect.left + (botJawImg.naturalWidth * scale);
+                right = right == null ? actualRight : Math.max(right, actualRight);
+            } else {
+                right = right == null ? botRect.right : Math.max(right, botRect.right);
+            }
+        }
         if (right == null && rootRect) right = rootRect.right;
         if (right == null) return 0;
 
@@ -291,7 +638,8 @@ class Renderer {
             if (!m) return null;
             return Math.max(1, Math.round(parseFloat(m[1])));
         })();
-        const ms = msFromCss ?? (kind === 'big' ? 200 : 160);
+        // Длительность укуса делаем одинаковой для small / big, чтобы анимация была一致ной.
+        const ms = msFromCss ?? 160;
         window.setTimeout(() => {
             parts.root?.classList?.remove(cls);
         }, ms);
@@ -342,6 +690,28 @@ class Renderer {
         parts.root.style.removeProperty('--bite-ms');
     }
 
+    // Переключение изображений пингвина при проигрыше
+    setPenguinGameOverState() {
+        const head = document.getElementById('penguin-head');
+        const topJaw = document.getElementById('penguin-top-jaw');
+        const botJaw = document.getElementById('penguin-bot-jaw');
+        
+        if (head) head.src = 'img/head-2.svg';
+        if (topJaw) topJaw.src = 'img/top-jaw-2.svg';
+        if (botJaw) botJaw.src = 'img/bot-jaw-2.svg';
+    }
+
+    // Сброс изображений пингвина в нормальное состояние
+    resetPenguinState() {
+        const head = document.getElementById('penguin-head');
+        const topJaw = document.getElementById('penguin-top-jaw');
+        const botJaw = document.getElementById('penguin-bot-jaw');
+        
+        if (head) head.src = 'img/head-1.svg';
+        if (topJaw) topJaw.src = 'img/top-jaw-1.svg';
+        if (botJaw) botJaw.src = 'img/bot-jaw-1.svg';
+    }
+
     // Полный сброс DOM-окна ленты (нужно при старте новой игры, чтобы current=0 центрировался сразу)
     resetStripWindow() {
         if (!this.numberStrip) return;
@@ -356,6 +726,16 @@ class Renderer {
         this.numberStrip.style.transform = `translateX(0px)`;
         this._deathTriggered = false;
         this._deathTriggeredForStart = null;
+        
+        // Сброс новой физической системы
+        this._beltPosition = 0;
+        this._lastBeltUpdateTime = 0;
+        this._mouthOpen = false;
+        this._mouthOpenUntil = 0;
+        this._lastAutoBiteTime = 0;
+        
+        // Переинициализация облаков
+        this.setupClouds();
     }
 
     setupFocusZone() {
@@ -399,6 +779,9 @@ class Renderer {
     // Проверка коллизии: левая граница ближайшей danger-точки коснулась правой границы головы.
     // Эмитим событие один раз на окно (по его start-значению).
     checkPenguinDangerCollision(director, current = null, isAuto = false) {
+        // В conveyor/physics режиме смерть считается физикой (checkCollisionsAndAutoBite),
+        // поэтому legacy-коллизию по danger windows отключаем полностью.
+        if (this._conveyorEnabled) return;
         if (this._deathTriggered) return;
         const container = document.getElementById('game-area');
         if (!container || !this.focusZone || !this.numberStrip) return;
@@ -497,15 +880,15 @@ class Renderer {
                 if (this._conveyorEnabled) {
                     // В conveyor-mode лента обновится в следующем кадре из updateConveyor().
                     // Здесь оставляем только "big bite" на действие.
-                    this.triggerBite('big', data.timer.calculateStepDuration() * 0.3);
+                    this.triggerBite('big', 0.16);
                     return;
                 }
                 // Круг НЕ останавливаем - он работает независимо!
                 // Только анимируем ленту к новому current
                 
                 const director = window.gameInstance?.director || null;
-                // Big bite should play on user-initiated shift
-                this.triggerBite('big', data.timer.calculateStepDuration() * 0.3);
+                // Big bite should play on user-initiated shift (та же длительность, что и auto-bite)
+                this.triggerBite('big', 0.16);
                 this.handleStepChange({
                     current: data.current,
                     timer: data.timer,
@@ -528,72 +911,328 @@ class Renderer {
         });
     }
 
-    // Конвейерный режим: обновление позиции ленты каждый кадр по дробной позиции таймера.
-    // Также синхронизирует укус: старт когда пройдено первые 20% пути тика, конец на 100%.
+    // Новая физическая система: постоянное движение ленты
     updateConveyor(timer, director) {
         if (!this._conveyorEnabled) return;
-        if (!timer) return;
         if (!this.numberStrip) return;
 
         const nowMs = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-        const pos = (typeof timer.getPosition === 'function') ? timer.getPosition(nowMs) : timer.current;
+        
+        // Инициализация времени
+        if (this._lastBeltUpdateTime === 0) {
+            this._lastBeltUpdateTime = nowMs;
+            // Инициализируем окно ленты
+            this.ensureStripWindowInitialized(0);
+            this.recomputeStripMetrics();
+            return;
+        }
 
-        // обновляем/recycle окно вокруг ближайшего целого
-        const base = Math.floor(pos);
-        this.ensureStripWindowInitialized(base);
+        // Вычисляем дельту времени
+        const deltaTime = nowMs - this._lastBeltUpdateTime;
+        this._lastBeltUpdateTime = nowMs;
+
+        // Обновляем позицию ленты (постоянное движение с учётом ускорения таймера)
+        const speedMultiplier = (timer && typeof timer.getSpeedMultiplier === 'function')
+            ? timer.getSpeedMultiplier()
+            : 1;
+        const beltSpeedNow = this._beltSpeed * (Number.isFinite(speedMultiplier) ? speedMultiplier : 1);
+        this._beltPosition += beltSpeedNow * deltaTime;
+
+        // Проверяем состояние рта (автоматически закрывается через время)
+        if (this._mouthOpen && nowMs >= this._mouthOpenUntil) {
+            this._mouthOpen = false;
+        }
+
+        // Пересчитываем метрики если нужно
         this.recomputeStripMetrics();
         if (this.stripPitchPx == null || this.stripFirstCenterPx == null) return;
 
-        this.maybeRecycleStripWindow(base);
-        this.updateStripClasses(base, director);
+        // Обновляем окно ленты на основе текущей позиции
+        // Используем позицию в "шагах" для управления окном
+        const currentValue = Math.floor(this._beltPosition / this.stripPitchPx);
+        this.ensureStripWindowInitialized(currentValue);
+        this.maybeRecycleStripWindow(currentValue);
+        this.updateStripClasses(currentValue, director);
 
-        // вычисляем translate по аналитике (работает для дробных значений)
+        // Обновляем позицию ленты визуально
         const container = document.getElementById('game-area');
         if (!container) return;
+        
         const anchorX = this.getFocusAnchorX(container);
-        const centerX = this.stripFirstCenterPx + (pos - this.stripMinValue) * this.stripPitchPx;
+        // Вычисляем смещение на основе текущей позиции ленты
+        const centerX = this.stripFirstCenterPx + (this._beltPosition - (this.stripMinValue * this.stripPitchPx));
         const targetOffset = anchorX - centerX;
         this.numberStrip.style.transition = 'none';
         this.numberStrip.style.transform = `translateX(${targetOffset}px)`;
         this.currentStripOffset = targetOffset;
 
-        // Укус привязан к ТИКУ и к ПРОЙДЕННОМУ ПУТИ:
-        // активен на участке пути [0.2 .. 0.9], причём если мы "приземлились" на 0.5 —
-        // укус должен начаться сразу в нужной фазе (без "перебивания" каждый кадр).
-        const dist = (typeof timer.getTickDistanceProgress === 'function') ? timer.getTickDistanceProgress(nowMs) : 0;
-        const tProg = (typeof timer.getTickTimeProgress === 'function') ? timer.getTickTimeProgress(nowMs) : 0;
-        const stepSec = timer.stepDurationSec || timer.calculateStepDuration?.() || 1.0;
-        const tickCounter = timer.tickCounter ?? 0;
+        // Debug overlay обновляется в checkCollisionsAndAutoBite, где мы знаем точно, какой объект в коллизии
 
-        const biteStart = 0.2;
-        const biteEnd = 0.9;
-        const eps = 1e-4;
+        // Проверка коллизий и авто-укусов
+        this.checkCollisionsAndAutoBite(container, director, nowMs);
+    }
 
-        const tStart = (typeof timer.timeProgressFromDistanceProgress === 'function')
-            ? timer.timeProgressFromDistanceProgress(biteStart)
-            : 0;
-        const tEnd = (typeof timer.timeProgressFromDistanceProgress === 'function')
-            ? timer.timeProgressFromDistanceProgress(biteEnd)
-            : 1;
+    // Проверка коллизий и автоматических укусов
+    checkCollisionsAndAutoBite(container, director, nowMs) {
+        if (!this.numberStrip) return;
+        if (this._deathTriggered) return; // Не проверяем коллизии после смерти
 
-        const shouldBite = dist >= (biteStart - eps) && dist <= (biteEnd + eps);
+        const parts = this.getPenguinParts();
+        if (!parts?.root) return;
 
-        // Новый тик — сбросим окно укуса (чтобы оно могло стартовать корректно заново)
-        if (tickCounter !== this._conveyorBiteTickCounter) {
-            this._conveyorBiteTickCounter = tickCounter;
-            this._conveyorBiteActive = false;
+        const containerRect = container.getBoundingClientRect();
+        const penguinRect = parts.root.getBoundingClientRect();
+        const jawTopRect = parts.topJaw?.getBoundingClientRect?.() || null;
+        const jawBotRect = parts.botJaw?.getBoundingClientRect?.() || null;
+
+        if (!jawTopRect || !jawBotRect) return;
+
+        // Вычисляем реальные размеры челюстей (с учетом пропорций изображений)
+        const getJawActualBounds = (jawEl, rect) => {
+            if (!jawEl || !rect) return null;
+            
+            let actualWidth = rect.width;
+            let actualHeight = rect.height;
+            let actualLeft = rect.left;
+            let actualTop = rect.top;
+            
+            // Если это img элемент, используем его реальные пропорции
+            if (jawEl.tagName === 'IMG' && jawEl.naturalWidth > 0 && jawEl.naturalHeight > 0) {
+                const computedStyle = window.getComputedStyle(jawEl);
+                const cssWidth = parseFloat(computedStyle.width);
+                const cssHeight = parseFloat(computedStyle.height);
+                const aspectRatio = jawEl.naturalWidth / jawEl.naturalHeight;
+                const containerAspectRatio = cssWidth / cssHeight;
+                
+                if (aspectRatio > containerAspectRatio) {
+                    actualWidth = cssWidth;
+                    actualHeight = cssWidth / aspectRatio;
+                } else {
+                    actualWidth = cssHeight * aspectRatio;
+                    actualHeight = cssHeight;
+                }
+                
+                // Центрируем относительно контейнера
+                const centerX = rect.left + rect.width / 2;
+                const centerY = rect.top + rect.height / 2;
+                actualLeft = centerX - actualWidth / 2;
+                actualTop = centerY - actualHeight / 2;
+            }
+            
+            return {
+                left: actualLeft,
+                right: actualLeft + actualWidth,
+                top: actualTop,
+                bottom: actualTop + actualHeight,
+                width: actualWidth,
+                height: actualHeight
+            };
+        };
+        
+        const topJawBounds = getJawActualBounds(parts.topJaw, jawTopRect);
+        const botJawBounds = getJawActualBounds(parts.botJaw, jawBotRect);
+        
+        if (!topJawBounds || !botJawBounds) return;
+
+        // Правая граница челюсти (используется для визуализации в debug и расчета коллизии)
+        // Коллизия происходит когда объект пересекается с челюстью (не просто проходит эту линию)
+        const jawRight = Math.max(topJawBounds.right, botJawBounds.right) - containerRect.left;
+        const jawLeft = Math.min(topJawBounds.left, botJawBounds.left) - containerRect.left;
+        const jawTop = Math.min(topJawBounds.top, botJawBounds.top) - containerRect.top;
+        const jawBottom = Math.max(topJawBounds.bottom, botJawBounds.bottom) - containerRect.top;
+
+        // Находим все видимые объекты на ленте
+        const circles = Array.from(this.numberStrip.querySelectorAll('.number-circle:not(.passed)'));
+        
+        // Для debug: находим ближайший объект к челюсти (для визуализации)
+        let nearestCircle = null;
+        let nearestDistance = Infinity;
+        let collidingCircle = null;
+
+        for (const circle of circles) {
+            // Пропускаем уже обработанные объекты
+            if (circle.dataset.processed === 'true') continue;
+
+            // В physics-режиме считаем коллизию по реальному boundingClientRect картинки
+            // (img получает точные размеры через updateFoodContainerSize).
+            const circleRect = circle.getBoundingClientRect();
+            const imgEl = circle.querySelector('img.food-img');
+            const imgRect = imgEl?.getBoundingClientRect?.() || null;
+
+            const imgLeft = (imgRect ? imgRect.left : circleRect.left) - containerRect.left;
+            const imgRight = (imgRect ? imgRect.right : circleRect.right) - containerRect.left;
+            const imgTop = (imgRect ? imgRect.top : circleRect.top) - containerRect.top;
+            const imgBottom = (imgRect ? imgRect.bottom : circleRect.bottom) - containerRect.top;
+
+            const circleCenterX = (imgLeft + imgRight) / 2;
+
+            // Вычисляем расстояние до линии челюсти для debug
+            const distanceToJaw = Math.abs(circleCenterX - jawRight);
+            if (distanceToJaw < nearestDistance) {
+                nearestDistance = distanceToJaw;
+                nearestCircle = circle;
+            }
+
+            // Проверяем коллизию: объект касается правой границы челюсти.
+            // Горизонтально считаем коллизией момент, когда правая граница объекта пересекает правую границу челюсти.
+            // Вертикально — когда есть пересечение по высоте.
+            const isColliding = imgRight >= jawRight &&
+                               imgLeft <= jawRight &&
+                               imgBottom >= jawTop &&
+                               imgTop <= jawBottom;
+            
+            // В debug режиме: помечаем объекты, которые триггерят game over
+            // (большие объекты в коллизии без открытого рта)
+            if (this.debug) {
+                const isDanger = circle.classList.contains('danger');
+                
+                if (isColliding && isDanger && !this._mouthOpen) {
+                    // В коллизии, большой объект, рот не открыт - триггер game over
+                    circle.classList.add('game-over-trigger');
+                } else {
+                    // Убираем класс если объект больше не триггерит game over
+                    circle.classList.remove('game-over-trigger');
+                }
+            }
+
+            if (isColliding) {
+                collidingCircle = circle;
+                const isDanger = circle.classList.contains('danger');
+                const value = parseInt(circle.dataset.value) || 0;
+
+                // Обновляем debug overlay - показываем только объект в коллизии
+                if (this.debug) {
+                    const dangerRect = imgRect
+                        ? {
+                            left: imgRect.left,
+                            top: imgRect.top,
+                            right: imgRect.right,
+                            bottom: imgRect.bottom,
+                            width: imgRect.width,
+                            height: imgRect.height
+                        }
+                        : circleRect;
+                    
+                    this.updateDebugObjectBoxes(circle, containerRect);
+                    this.updateDebugOverlay({
+                        containerRect,
+                        penguinRect: null, // Не показываем
+                        jawTopRect,
+                        jawBotRect,
+                        dangerRect,
+                        biteX: jawRight,
+                        anchorX: null // Не показываем
+                    });
+                }
+
+                if (isDanger) {
+                    // Большой объект (danger) - нужен открытый рот
+                    if (!this._mouthOpen) {
+                        // Коллизия без открытого рта - проигрыш
+                        // Помечаем объект как триггер game over (для красной цифры в debug)
+                        circle.classList.add('game-over-trigger');
+                        if (!this._deathTriggered) {
+                            this._deathTriggered = true;
+                            this.dbgLog('death', {
+                                value,
+                                jawRight,
+                                jawTop,
+                                jawBottom,
+                                imgRight,
+                                imgLeft,
+                                imgTop,
+                                imgBottom,
+                                mouthOpen: this._mouthOpen,
+                                variant: (circle.querySelector('img.food-img')?.dataset?.variant) || null
+                            }, 0);
+                            eventBus.emit('PENGUIN_DANGER_COLLISION', { 
+                                reason: 'COLLISION_WITHOUT_OPEN_MOUTH',
+                                value 
+                            });
+                        }
+                        // Больше не трогаем этот объект
+                        circle.dataset.processed = 'true';
+                        return; // Прекращаем проверку после смерти
+                    } else {
+                        // Рот открыт - большой укус (та же длительность, что и малый)
+                        this.triggerBite('big', 0.16);
+                        // Успешно: анимация "в рот" и растворение
+                        circle.dataset.processed = 'true';
+                        const mouthTargetX = jawRight - 24; // чуть внутри пасти
+                        const mouthTargetY = (jawTop + jawBottom) / 2;
+                        this.animateEatIntoMouth(circle, container, containerRect, mouthTargetX, mouthTargetY);
+                        this.dbgLog('eat', { kind: 'big', value }, 120);
+                        if (typeof eventBus !== 'undefined' && eventBus?.emit) {
+                            eventBus.emit('FOOD_EATEN', { kind: 'big', value });
+                        }
+                    }
+                } else {
+                    // Маленький объект (normal) - автоматический укус
+                    if (nowMs - this._lastAutoBiteTime >= this._autoBiteCooldown) {
+                        this.triggerBite('small', 0.16);
+                        this._lastAutoBiteTime = nowMs;
+                        // Успешно: анимация "в рот" и растворение
+                        circle.dataset.processed = 'true';
+                        const mouthTargetX = jawRight - 20; // чуть внутри пасти
+                        const mouthTargetY = (jawTop + jawBottom) / 2;
+                        this.animateEatIntoMouth(circle, container, containerRect, mouthTargetX, mouthTargetY);
+                        this.dbgLog('eat', { kind: 'small', value }, 120);
+                        if (typeof eventBus !== 'undefined' && eventBus?.emit) {
+                            eventBus.emit('FOOD_EATEN', { kind: 'small', value });
+                        }
+                    } else {
+                        // Кулдаун: пока не считаем объект обработанным, чтобы укус случился при следующей проверке
+                    }
+                }
+            }
         }
 
-        if (shouldBite) {
-            const durationMs = Math.max(1, Math.round((tEnd - tStart) * stepSec * 1000));
-            const elapsedMs = Math.max(0, Math.min(durationMs, Math.round((tProg - tStart) * stepSec * 1000)));
-            const needStart = !this._conveyorBiteActive;
-            this.applyConveyorBite('small', durationMs, elapsedMs, needStart);
-            this._conveyorBiteActive = true;
-        } else if (this._conveyorBiteActive) {
-            this._conveyorBiteActive = false;
-            this.clearConveyorBite();
+        // Debug (без спама): показываем один объект стабильно (ближайший к челюсти),
+        // и логируем только изменения состояния.
+        if (this.debug) {
+            const tracked = collidingCircle || nearestCircle;
+            const trackedValue = tracked ? (parseInt(tracked.dataset.value) || null) : null;
+            const trackedIsColliding = !!collidingCircle;
+
+            if (trackedValue !== this._dbg.lastTrackedValue) {
+                this.dbgLog('track', { value: trackedValue }, 200);
+                this._dbg.lastTrackedValue = trackedValue;
+                this._dbg.lastTrackedWasColliding = false;
+            }
+
+            if (trackedIsColliding !== this._dbg.lastTrackedWasColliding && trackedValue != null) {
+                this.dbgLog('collide', {
+                    value: trackedValue,
+                    isColliding: trackedIsColliding,
+                    jawRight,
+                    mouthOpen: this._mouthOpen
+                }, 120);
+                this._dbg.lastTrackedWasColliding = trackedIsColliding;
+            }
+
+            // Рисуем бокс для tracked (яркий, если именно коллизия), иначе полупрозрачный
+            this.updateDebugObjectBoxes(tracked, containerRect, trackedIsColliding);
+            this.updateDebugOverlay({
+                containerRect,
+                penguinRect: null,
+                jawTopRect,
+                jawBotRect,
+                dangerRect: null,
+                biteX: jawRight,
+                anchorX: null
+            });
         }
+    }
+
+    // Открытие рта (для большого укуса)
+    openMouth(durationMs = 500) {
+        const nowMs = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+        // Продлеваем окно "открытого рта", чтобы можно было нажимать заранее.
+        this._mouthOpen = true;
+        this._mouthOpenUntil = nowMs + durationMs;
+        // Визуальная анимация укуса всегда короткая и одинаковая по длительности.
+        this.triggerBite('big', 0.16);
+        this.dbgLog('mouth', { open: true, untilMs: this._mouthOpenUntil }, 150);
     }
     
     setupFocusZoneAnimation() {
@@ -1018,7 +1657,7 @@ class Renderer {
                 const value = parseInt(el.dataset.value);
 
                 // Пройденные шаги (позади текущего) — подсвечиваем зелёным
-                const isPassed = value < current;
+                const isPassed = el.classList.contains('passed') || value < current;
                 if (isPassed) {
                     el.classList.add('passed');
                     // Фон "passed" должен доминировать, поэтому убираем базовые normal/danger
@@ -1027,6 +1666,8 @@ class Renderer {
                     this.updateFoodVariant(el, false);
                 } else {
                     el.classList.remove('passed');
+                    // Сбрасываем флаг обработки для новых объектов
+                    el.dataset.processed = 'false';
 
                     const isDanger = this.isDangerNumber(value, allDangerWindows);
                     if (isDanger) {
@@ -1067,11 +1708,15 @@ class Renderer {
         const first = this.numberStrip.querySelector('.number-circle');
         if (!first) return;
 
+        // Используем реальную ширину контейнера (которая подстроилась под изображение)
+        const rect = first.getBoundingClientRect();
+        const width = rect.width || parseFloat(getComputedStyle(first).width) || 63;
         const style = window.getComputedStyle(first);
-        const width = parseFloat(style.width) || 40;
         const marginLeft = parseFloat(style.marginLeft) || 0;
         const marginRight = parseFloat(style.marginRight) || 0;
 
+        // Pitch = ширина объекта + gap слева + gap справа
+        // Gap формируется относительно границ объектов (одинаковый для всех)
         this.stripPitchPx = width + marginLeft + marginRight;
         this.stripFirstCenterPx = marginLeft + width / 2;
     }
@@ -1092,58 +1737,34 @@ class Renderer {
         return false;
     }
 
-    // Рендер кнопок управления
+    // Рендер кнопок управления - теперь только одна кнопка для открытия рта
     renderControlButtons(buttons) {
-        if (!this.controlButtons || !buttons || buttons.length === 0) {
+        if (!this.controlButtons) {
             return;
         }
 
-        // В новой механике на экране всегда 2 кнопки.
-        // Для надежности и чтобы не ловить баги с "detached nodes" пересоздаём DOM-кнопки каждый раз.
+        // В новой механике на экране всегда 1 кнопка для открытия рта
         this.controlButtons.innerHTML = '';
 
-        buttons.forEach((button, index) => {
-            if (!button || typeof button.delta !== 'number') return;
+        const btn = document.createElement('button');
+        btn.className = 'control-btn';
+        btn.type = 'button';
+        btn.textContent = 'BIG BITE';
+        btn.title = 'Big bite (Space)';
+        btn.disabled = false;
+        btn.classList.add('neutral');
 
-            const btn = document.createElement('button');
-            btn.className = 'control-btn';
-            btn.dataset.delta = String(button.delta);
-            btn.type = 'button';
+        // Клик/тач - открывает рот
+        const clickHandler = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (window.gameInstance) window.gameInstance.userInteracted = true;
+            eventBus.emit('MOUTH_BUTTON_CLICKED', {});
+        };
+        btn.addEventListener('click', clickHandler);
+        btn.addEventListener('touchstart', clickHandler);
 
-            // Текст
-            btn.textContent = button.label || (button.delta > 0 ? `+${button.delta}` : `${button.delta}`);
-
-            // Классы
-            btn.classList.remove('solution', 'trap', 'neutral', 'inactive');
-            if (button.active) {
-                btn.disabled = false;
-                if (button.type === 'solution') btn.classList.add('solution');
-                else if (button.type === 'trap') btn.classList.add('trap');
-                else btn.classList.add('neutral');
-            } else {
-                btn.disabled = true;
-                btn.classList.add('inactive');
-            }
-
-            // Хоткеи (1/2)
-            if (button.active && index < 2) {
-                btn.title = `Hotkey: ${(index + 1).toString()}`;
-            }
-
-            // Клик/тач
-            if (button.active) {
-                const clickHandler = (e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    if (window.gameInstance) window.gameInstance.userInteracted = true;
-                    eventBus.emit('BUTTON_CLICKED', { delta: button.delta });
-                };
-                btn.addEventListener('click', clickHandler);
-                btn.addEventListener('touchstart', clickHandler);
-            }
-
-            this.controlButtons.appendChild(btn);
-        });
+        this.controlButtons.appendChild(btn);
     }
 
     // Рендер перков
@@ -1190,7 +1811,9 @@ class Renderer {
         const slowdownBtn = document.getElementById('slowdown-btn');
         const soundBtn = document.getElementById('sound-btn');
 
-        const score = Math.floor(state?.timer?.maxReached ?? 0);
+        // Очки теперь считаются от реально съеденных объектов (state.score),
+        // а maxReached используем только как резервный fallback.
+        const score = Math.floor(state?.score ?? state?.timer?.maxReached ?? 0);
         const best = Math.floor(state?.bestScore ?? 0);
         const streak = Math.max(0, Math.min(50, Math.floor(state?.streakPoints ?? state?.dangerPassedStreak ?? 0)));
 
@@ -1298,6 +1921,95 @@ class Renderer {
         if (startScreen) {
             startScreen.classList.add('hidden');
         }
+    }
+
+    // Настройка облаков на фоне
+    setupClouds() {
+        const container = document.getElementById('clouds-container');
+        if (!container) return;
+
+        // Очищаем существующие облака
+        container.innerHTML = '';
+
+        // Размеры облаков
+        const cloudSizes = [
+            { name: 'xs', width: '60px', height: '30px', speed: 0.3 },
+            { name: 's', width: '100px', height: '50px', speed: 0.2 },
+            { name: 'm', width: '150px', height: '75px', speed: 0.15 }
+        ];
+
+        // Создаем несколько облаков
+        const cloudCount = 8;
+        for (let i = 0; i < cloudCount; i++) {
+            const cloudSize = cloudSizes[Math.floor(Math.random() * cloudSizes.length)];
+            const cloud = document.createElement('div');
+            cloud.className = 'cloud';
+            
+            const img = document.createElement('img');
+            img.src = `img/cloud-${cloudSize.name}.png`;
+            img.alt = '';
+            cloud.appendChild(img);
+            
+            // Случайная начальная позиция (выше середины экрана)
+            const startY = Math.random() * 30 + 5; // 5-35% от верха
+            const startX = Math.random() * 120 - 20; // -20% до 100% (чтобы начинались за экраном)
+            
+            cloud.style.width = cloudSize.width;
+            cloud.style.height = cloudSize.height;
+            cloud.style.left = `${startX}%`;
+            cloud.style.top = `${startY}%`;
+            cloud.dataset.speed = cloudSize.speed.toString();
+            
+            container.appendChild(cloud);
+        }
+
+        // Анимация облаков
+        this.animateClouds();
+    }
+
+    // Анимация движения облаков
+    animateClouds() {
+        const container = document.getElementById('clouds-container');
+        if (!container) return;
+
+        const clouds = Array.from(container.querySelectorAll('.cloud'));
+        if (clouds.length === 0) return;
+        
+        let lastTime = performance.now();
+        
+        const animate = (currentTime) => {
+            const deltaTime = currentTime - lastTime;
+            lastTime = currentTime;
+            
+            // Нормализуем скорость (пикселей в секунду)
+            const baseSpeed = 20; // базовая скорость в px/s
+            
+            clouds.forEach(cloud => {
+                const speedMultiplier = parseFloat(cloud.dataset.speed) || 0.2;
+                const speed = (baseSpeed * speedMultiplier * deltaTime) / 1000; // px per frame
+                
+                // Получаем текущую позицию в пикселях
+                const containerRect = container.getBoundingClientRect();
+                const cloudRect = cloud.getBoundingClientRect();
+                const currentLeft = cloudRect.left - containerRect.left;
+                
+                // Двигаем облако влево
+                let newLeft = currentLeft - speed;
+                
+                // Если облако ушло за левый край, перемещаем его вправо
+                if (newLeft + cloudRect.width < 0) {
+                    newLeft = containerRect.width + 20; // Начинаем справа за экраном
+                    // Меняем высоту для разнообразия
+                    cloud.style.top = `${Math.random() * 30 + 5}%`;
+                }
+                
+                cloud.style.left = `${newLeft}px`;
+            });
+            
+            requestAnimationFrame(animate);
+        };
+        
+        requestAnimationFrame(animate);
     }
 }
 

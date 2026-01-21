@@ -2,7 +2,7 @@
 class Game {
     constructor() {
         this.timer = new Timer();
-        this.director = new Director();
+        this.director = null;
         this.perks = new PerkSystem();
         this.audio = new AudioSystem();
         this.storage = new StorageSystem();
@@ -26,8 +26,8 @@ class Game {
         // Отложенная смерть (для анимации столкновения)
         this.deathInProgress = false;
         
-        // Смерть "после приземления" на хоткей-перемотке
-        this.pendingShiftDeath = null; // { animId, meta }
+        // legacy: раньше была смерть "после приземления" на хоткей-перемотке
+        this.pendingShiftDeath = null;
 
         // Защита от раннего клика PLAY и от повторных стартов.
         this.isInitialized = false;
@@ -96,27 +96,7 @@ class Game {
         eventBus.on('TICK_STEP', (data) => {
             // Обрабатываем только если игра запущена
             if (this.state === 'RUNNING') {
-                // Передаем director в данные события для обновления ленты
-                if (data) {
-                    data.director = this.director;
-                }
                 this.onTickStep(data);
-            }
-        });
-
-        eventBus.on('SHIFT_USED', (data) => {
-            this.onShiftUsed(data);
-        });
-
-        // События директора
-        eventBus.on('BUTTONS_UPDATED', (data) => {
-            this.renderer.renderControlButtons(data.buttons);
-        });
-
-        // События кнопок
-        eventBus.on('BUTTON_CLICKED', (data) => {
-            if (data && typeof data.delta === 'number') {
-                this.onButtonClicked(data.delta);
             }
         });
 
@@ -139,23 +119,22 @@ class Game {
             this.resume();
         });
 
-        // Game over по коллизии "danger касается головы пингвина"
-        eventBus.on('PENGUIN_DANGER_COLLISION', (data) => {
+        // Game over по физической коллизии (любой объект касается челюсти при закрытом рте)
+        eventBus.on('PENGUIN_COLLISION', (_data) => {
             if (this.state !== 'RUNNING') return;
-            this.beginDeath({ reason: 'PENGUIN_DANGER_COLLISION', dangerStart: data?.dangerStart });
+            this.beginDeath({ reason: 'PENGUIN_COLLISION' });
         });
 
         // Счёт и streak от реально съеденных объектов
         eventBus.on('FOOD_EATEN', (data) => {
             if (this.state !== 'RUNNING') return;
-            const kind = data?.kind === 'big' ? 'big' : 'small';
             const value = Number.isFinite(data?.value) ? data.value : null;
 
             // +1 очко за ЛЮБОЙ съеденный объект
             this.score = (this.score || 0) + 1;
 
-            // Streak только за большие объекты
-            if (kind === 'big' && this.perks && typeof this.perks.addStreak === 'function') {
+            // В новой механике streak = серия проглоченных объектов
+            if (this.perks && typeof this.perks.addStreak === 'function') {
                 this.perks.addStreak(1);
             }
 
@@ -171,6 +150,8 @@ class Game {
             
             const key = e.key;
             if (key === ' ' || key === 'Spacebar') {
+                // Не даём автоповтору клавиши превращать укус в "авто-режим"
+                if (e.repeat) return;
                 e.preventDefault();
                 // Кнопка открытия рта
                 if (this.renderer) {
@@ -290,7 +271,7 @@ class Game {
             
             this.state = 'COUNTDOWN';
             this.timer.reset();
-            this.director = new Director();
+            this.director = null;
             this.perks.reset();
             this.audio.reset();
 
@@ -335,7 +316,7 @@ class Game {
         }
 
         // Рендерим ленту для начального состояния
-        this.renderer.renderNumberStrip(this.timer, this.director);
+        this.renderer.renderNumberStrip(this.timer, null);
         
             // Запуск игрового цикла
             this.gameLoop();
@@ -366,11 +347,8 @@ class Game {
         // Проверка инверсии
         this.timer.checkInversion();
         
-        // Обновление директора
         const gameState = this.getGameState();
-        this.director.update(gameState);
-        if (this.state !== 'RUNNING') return;
-        
+
         // Обновление перков
         this.perks.update(gameState);
         
@@ -395,8 +373,7 @@ class Game {
     // Рендеринг
     render() {
         const gameState = this.getGameState();
-        // Лента/круг теперь управляются событийно внутри Renderer (TICK_STEP/SHIFT_USED),
-        // чтобы корректно анимировать "конвейер" и не конфликтовать с gameLoop.
+        // Лента обновляется в Renderer (physics/conveyor) каждый кадр из gameLoop.
         
         // Кнопка управления (всегда одна - открытие рта)
         // В новой системе не используем director для кнопок
@@ -420,39 +397,9 @@ class Game {
             this.renderer.updateActionCooldown(cooldownProgress);
         }
 
-        // Конвейер: позиция ленты обновляется каждый кадр из дробной позиции таймера
+        // Конвейер: позиция ленты обновляется каждый кадр
         if (this.renderer && typeof this.renderer.updateConveyor === 'function') {
-            this.renderer.updateConveyor(this.timer, this.director);
-        }
-
-        const shiftActiveBefore = !!this.timer?.shiftVisual;
-        // ВАЖНО: getPosition() может завершить shiftVisual (она вызывает getShiftOffset()).
-        const pos = (typeof this.timer.getPosition === 'function') ? this.timer.getPosition(nowMs) : this.timer.current;
-        const shiftActiveAfter = !!this.timer?.shiftVisual;
-
-        // Если хоткей-анимация закончилась в этот кадр — проверяем смерть по "приземлению"
-        if (this.state === 'RUNNING' && !this.deathInProgress && shiftActiveBefore && !shiftActiveAfter && this.pendingShiftDeath) {
-            const lastAnimId = this.timer?.shiftAnimId || 0;
-            if (this.pendingShiftDeath.animId === lastAnimId) {
-                this.beginDeath(this.pendingShiftDeath.meta);
-            }
-            this.pendingShiftDeath = null;
-        }
-
-        // В conveyor/physics режиме смертельная коллизия считается ТОЛЬКО физикой в Renderer
-        // (пересечение с челюстью). Старую логику "fatal window by position" отключаем,
-        // иначе game over выглядит случайным относительно объектов на ленте.
-        const conveyorEnabled = !!this.renderer?._conveyorEnabled;
-        if (!conveyorEnabled) {
-            // Фатальная коллизия по дробной позиции (legacy):
-            // - для auto: проверяем всегда
-            // - для хоткей-анимации: НЕ проверяем "на пролёте", только на приземлении (выше)
-            if (this.state === 'RUNNING' && !this.deathInProgress && !shiftActiveBefore && !shiftActiveAfter && this.director?.getFatalWindowAtPosition) {
-                const w = this.director.getFatalWindowAtPosition(pos);
-                if (w) {
-                    this.beginDeath({ reason: 'FATAL_DANGER', dangerStart: w.start, position: pos });
-                }
-            }
+            this.renderer.updateConveyor(this.timer, null);
         }
     }
 
@@ -485,8 +432,9 @@ class Game {
     
     // Проверка необходимости рендера кнопок
     shouldRenderButtons() {
-        const currentButtonsStr = JSON.stringify(this.director.currentButtons);
-        return !this.lastRenderedButtons || this.lastRenderedButtons !== currentButtonsStr;
+        // В новой механике всегда одна кнопка "проглотить/открыть рот",
+        // поэтому больше не сравниваем набор кнопок от Director.
+        return false;
     }
 
     // Обновление UI
@@ -499,7 +447,6 @@ class Game {
     getGameState() {
         return {
             timer: this.timer,
-            director: this.director,
             perks: this.perks,
             streak: this.perks?.getStreakPoints ? this.perks.getStreakPoints() : (this.perks?.streakPoints || 0),
             streakPoints: this.perks.getStreakPoints ? this.perks.getStreakPoints() : (this.perks.streakPoints || 0),
@@ -517,75 +464,9 @@ class Game {
             return;
         }
 
-    // Обработка использования сдвига
-    onShiftUsed(data) {
-        // Обновление кнопок после сдвига
-        const gameState = this.getGameState();
-        this.director.currentButtons = [];
-        this.director.ensureButtons(gameState);
-        if (this.director.currentButtons.length > 0) {
-            this.renderer.renderControlButtons(this.director.currentButtons);
-        }
-    }
-
-    // Обработка клика по кнопке
-    onButtonClicked(delta) {
-        if (this.state !== 'RUNNING') {
-            return;
-        }
-
-        // Кулдаун: не даём спамить и "застопорить" геймплей
-        const nowMs = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-        if (nowMs < this.nextActionAllowedAtMs) return;
-
-        const stepMs = Math.max(150, (this.timer?.calculateStepDuration?.() ?? 1.0) * 1000);
-        // примерно 1 действие на тик (чуть быстрее, чтобы было ощущение контроля)
-        const cdMs = stepMs * 0.75;
-        this.lastActionAtMs = nowMs;
-        this.lastActionCooldownMs = cdMs;
-        this.nextActionAllowedAtMs = nowMs + cdMs;
-
-        // Воспроизведение звуков эффектов
-        if (this.audio.isPlaying) {
-            if (delta < 0) {
-                // Отрицательная дельта - звук перемотки назад
-                this.audio.playBackSound();
-            } else if (delta > 0) {
-                // Положительная дельта - звук перемотки вперед
-                this.audio.playForwardSound();
-            }
-        }
-
-        const beforeAnimId = this.timer?.shiftAnimId || 0;
-        this.timer.shift(delta);
-        if (this.state !== 'RUNNING') return;
-
-        // Если конечная точка перемотки фатальна — планируем смерть ПОСЛЕ приземления (после окончания анимации).
-        // Во время перемещения смерть не должна срабатывать.
-        if (this.director?.getFatalWindowAtPosition && typeof this.timer.getTickDistanceProgress === 'function') {
-            const nowMs2 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-            const distProgress = this.timer.getTickDistanceProgress(nowMs2);
-            const landingPos = this.timer.current + (typeof this.timer.direction === 'number' ? this.timer.direction : 1) * distProgress;
-            const w = this.director.getFatalWindowAtPosition(landingPos);
-            const currentAnimId = this.timer?.shiftAnimId || beforeAnimId;
-            if (w) {
-                this.pendingShiftDeath = {
-                    animId: currentAnimId,
-                    meta: { reason: 'SHIFT_FATAL', dangerStart: w.start, position: landingPos }
-                };
-            } else {
-                this.pendingShiftDeath = null;
-            }
-        }
-        
-        // Обновление кнопок
-        const gameState = this.getGameState();
-        this.director.currentButtons = [];
-        this.director.ensureButtons(gameState);
-        if (this.director.currentButtons.length > 0) {
-            this.renderer.renderControlButtons(this.director.currentButtons);
-        }
-    }
+    // legacy: старые обработчики shift/кнопок больше не используются
+    onShiftUsed(_data) { return; }
+    onButtonClicked(_delta) { return; }
 
     toggleSound() {
         const settings = this.storage.loadSettings() || {};
@@ -658,18 +539,8 @@ class Game {
         this.deathInProgress = false;
         this.audio.pause();
 
-        // Запоминаем danger window, в котором произошла смерть,
-        // чтобы Continue мог вернуть игрока на точку ДО начала этого окна
-        const hintedStart = (meta && typeof meta.dangerStart === 'number') ? meta.dangerStart : null;
-        const deathWindow = this.director?.dangerWindows?.find(w => {
-            if (hintedStart != null) return w.start === hintedStart;
-            return this.timer.current >= w.start && this.timer.current < (w.start + w.length);
-        });
-        this.lastDeathDangerWindow = deathWindow ? {
-            start: deathWindow.start,
-            length: deathWindow.length,
-            solutionDelta: deathWindow.solutionDelta
-        } : null;
+        // В новой механике нет danger-zones/окон угроз.
+        this.lastDeathDangerWindow = null;
 
         // Останавливаем анимации ленты/круга, чтобы экран Game Over был "заморожен"
         if (this.renderer && typeof this.renderer.stopStripAnimation === 'function') {
@@ -712,81 +583,18 @@ class Game {
             return;
         }
         
+        // В новой механике "Continue" просто перезапускает забег.
+        // (Second life тратится, но угроз/окон больше нет.)
         this.renderer.hideGameOverScreen();
-        
-        // Продолжаем с точки прямо ПЕРЕД началом danger zone, в которой произошла смерть.
-        // Важно: НЕ очищаем dangerWindows, иначе Director сгенерирует новую "ленту".
-        let safeValue = Math.max(0, this.timer.current - 5);
-
-        const w =
-            this.lastDeathDangerWindow ||
-            this.director?.dangerWindows?.find(win =>
-                this.timer.current >= win.start && this.timer.current < (win.start + win.length)
-            );
-
-        if (w && typeof w.start === 'number') {
-            safeValue = Math.max(0, w.start - 1);
-        }
-
-        this.timer.current = safeValue;
-        // Чтобы после Continue не было "мгновенного тика" из-за паузы на Game Over
-        this.timer.lastStepTime = 0;
-
-        // Обновляем кнопки под восстановленную позицию
-        this.director.currentButtons = [];
-        const gameState = this.getGameState();
-        this.director.ensureButtons(gameState);
-        if (this.director.currentButtons.length > 0) {
-            this.renderer.renderControlButtons(this.director.currentButtons);
-        }
-
-        // Синхронизируем ленту и СРАЗУ запускаем круг (иначе до первого TICK_STEP будет "заморозка")
-        if (this.renderer) {
-            if (typeof this.renderer.stopStripAnimation === 'function') this.renderer.stopStripAnimation();
-            if (typeof this.renderer.stopCircleAnimation === 'function') this.renderer.stopCircleAnimation();
-            this.renderer.lastCurrentValue = null;
-            if (typeof this.renderer.handleStepChange === 'function') {
-                this.renderer.handleStepChange({
-                    current: this.timer.current,
-                    timer: this.timer,
-                    director: this.director,
-                    stepDurationSec: this.timer.calculateStepDuration(),
-                    isAuto: true
-                });
-            } else {
-                // Fallback: если API изменится
-                if (typeof this.renderer.updateStripPosition === 'function') {
-                    this.renderer.updateStripPosition(this.timer.current, null);
-                }
-                if (typeof this.renderer.updateStripClasses === 'function') {
-                    this.renderer.updateStripClasses(this.timer.current, this.director);
-                }
-                if (typeof this.renderer.animateCircleAuto === 'function') {
-                    this.renderer.animateCircleAuto(this.timer.calculateStepDuration());
-                }
-            }
-        }
-
-        // Использовали checkpoint — очищаем, чтобы не применять повторно
-        this.lastDeathDangerWindow = null;
-        
-        this.state = 'RUNNING';
-        this.lastUpdateTime = performance.now();
-        // После Continue снова разрешаем действия
-        this.nextActionAllowedAtMs = 0;
-        this.lastActionAtMs = 0;
-        this.lastActionCooldownMs = 0;
-        this.deathInProgress = false;
-        // Запускаем музыку
-        this.audio.play();
-        this.gameLoop();
+        this.restart();
+        this.start();
     }
 
     // Рестарт
     restart() {
         this.state = 'MENU';
         this.timer.reset();
-        this.director = new Director();
+        this.director = null;
         this.perks.reset();
         this.audio.reset();
         this.storage.clearSnapshot();
@@ -808,7 +616,6 @@ class Game {
     saveSnapshot() {
         const snapshot = {
             timer: this.timer.toSnapshot(),
-            director: this.director.toSnapshot(),
             perks: this.perks.toSnapshot(),
             timestamp: Date.now()
         };
@@ -846,7 +653,6 @@ class Game {
         
         // Восстанавливаем данные, но НЕ запускаем игру
         this.timer.fromSnapshot(snapshot.timer);
-        this.director.fromSnapshot(snapshot.director);
         this.perks.fromSnapshot(snapshot.perks);
         
         // Обновление best score из снапшота

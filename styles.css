@@ -388,6 +388,14 @@ body {
     border-left-style: dashed;
 }
 
+/* Горизонтальная линия по нижней границе нижней челюсти */
+.debug-line.debug-jaw-bottom {
+    width: 100%;
+    height: 0;
+    border-left: 0;
+    border-top: 2px solid rgba(255, 200, 0, 0.95);
+}
+
 #number-strip-container {
     position: absolute;
     width: 100%;
@@ -407,12 +415,13 @@ body {
 
 .number-circle {
     position: relative;
-    /* Фиксированный слот: движение ленты использует постоянный шаг */
-    width: calc(var(--circle-size) * 3.2);
-    height: calc(var(--circle-size) * 2.2);
+    /* Фиксированный слот: движение ленты использует постоянный шаг.
+       Чуть расширяем слот и увеличиваем зазор, чтобы объекты не липли. */
+    width: calc(var(--circle-size) * 2.6);
+    height: calc(var(--circle-size) * 1.8);
     /* Убираем круглое обрамление */
     border-radius: 0;
-    /* Gap между объектами делаем в 2–3 раза меньше */
+    /* Чуть больший горизонтальный gap между объектами */
     margin: 0 6px;
     transition: all 0.2s;
     flex-shrink: 0;
@@ -590,10 +599,23 @@ body {
 }
 
 .penguin-jaw {
-    z-index: 2;
+    z-index: 3; /* передняя пара челюстей поверх back-jaw */
     width: 100%;
     height: 100%;
     object-fit: contain;
+}
+
+/* Фоновая "back-jaw" под передними челюстями */
+.penguin-jaw--back {
+    left: calc(var(--jaw-top-x) / 2); /* левый край совпадает с верхней челюстью */
+    /* по вертикали выравниваем по центру между верхней и нижней челюстью */
+    top: calc((var(--jaw-top-y) + var(--jaw-bot-y)) / 1.5);
+    width: var(--jaw-top-w);
+    height: calc((var(--jaw-top-h) + var(--jaw-bot-h)) * 0.3);
+    right: auto;
+    bottom: auto;
+    transform-origin: 0% 50%;
+    z-index: 0; /* между головой и передними челюстями */
 }
 
 .penguin-jaw--top {
@@ -616,32 +638,34 @@ body {
     transform-origin: 0% 0%; /* left top corner */
 }
 
-/* Bite animations (small / big). Trigger by toggling classes on #penguin-root */
+/* При game over нижняя челюсть слегка опускается ниже (горизонтальное смещение
+   управляется логикой рендерера через transform всей конструкции головы). */
+.penguin-jaw--bot.game-over {
+    top: calc(var(--jaw-bot-y) + 13%);
+    transform: rotate(-15deg) scaleX(0.9);
+}
+
+/* При game over верхняя челюсть немного сужается по ширине,
+   сохраняя пропорции относительно головы (примерно -10% по X). */
+.penguin-jaw--top.game-over {
+    transform: scaleX(0.9);
+}
+
+/* Bite animations (single type). Trigger by toggling class .bite-small on #penguin-root */
 @keyframes penguinJawTopSmall {
-    0% { transform: translateX(0px) rotate(0deg); }
-    /* При открытии верхняя челюсть слегка уезжает вправо */
-    35% { transform: translateX(4px) rotate(-18deg); }
-    100% { transform: translateX(0px) rotate(0deg); }
+    0%   { transform: translateX(0px) translateY(0px) rotate(0deg); }
+    35%  { transform: translateX(4px) translateY(-3px) rotate(-16deg); }
+    100% { transform: translateX(0px) translateY(0px) rotate(0deg); }
 }
 @keyframes penguinJawBotSmall {
-    0% { transform: translateX(0px) rotate(0deg); }
-    /* Лёгкий сдвиг нижней челюсти вправо при малом укусе */
-    35% { transform: translateX(4px) rotate(4deg); }
-    100% { transform: translateX(0px) rotate(0deg); }
+    0%   { transform: translateX(0px) translateY(0px) rotate(0deg); }
+    35%  { transform: translateX(4px) translateY(3px) rotate(12deg); }
+    100% { transform: translateX(0px) translateY(0px) rotate(0deg); }
 }
-@keyframes penguinJawTopBig {
-    /* Big bite: только поворот, без смещения (уменьшен для меньшего открытия) */
-    0% { transform: translateX(0px) rotate(0deg); }
-    /* При большом укусе верхняя челюсть тоже слегка двигается вправо */
-    40% { transform: translateX(20px) rotate(-28deg); }
-    100% { transform: translateX(5px) rotate(0deg); }
-}
-@keyframes penguinJawBotBig {
-    /* Big bite: только поворот, без смещения (уменьшен для меньшего открытия) */
-    0% { transform: translateX(0px) rotate(0deg); }
-    /* Нижняя челюсть тоже чуть уезжает вправо, но меньше чем верхняя */
-    40% { transform: translateX(14px) rotate(10deg); }
-    100% { transform: translateX(4px) rotate(0deg); }
+@keyframes penguinBackJawSmall {
+    0%   { transform: translateX(0px) translateY(0px) scale(1); }
+    35%  { transform: translateX(-20px) translateY(0px) scale(1.6); }
+    100% { transform: translateX(0px) translateY(0px) scale(1); }
 }
 
 /* Head stretch during bite (height +10%) */
@@ -651,22 +675,10 @@ body {
     100% { transform: scaleY(1); }
 }
 
-@keyframes penguinHeadStretchBig {
-    0% { transform: scaleY(1); }
-    40% { transform: scaleY(1.1); }
-    100% { transform: scaleY(1); }
-}
-
-/* Head nudge during bite - отключено (голова статична) */
+/* Head nudge during bite — вся конструкция головы/челюстей слегка сдвигается вправо */
 @keyframes penguinNudgeSmall {
-    0% { transform: translateX(0px); }
-    35% { transform: translateX(0px); }
-    100% { transform: translateX(0px); }
-}
-
-@keyframes penguinNudgeBig {
-    0% { transform: translateX(0px); }
-    40% { transform: translateX(0px); }
+    0%   { transform: translateX(0px); }
+    35%  { transform: translateX(8px); }
     100% { transform: translateX(0px); }
 }
 
@@ -680,23 +692,15 @@ body {
 
 .penguin.bite-small .penguin-jaw--top { animation: penguinJawTopSmall var(--bite-ms, 140ms) ease-in-out var(--bite-delay-ms, 0ms); }
 .penguin.bite-small .penguin-jaw--bot { animation: penguinJawBotSmall var(--bite-ms, 140ms) ease-in-out var(--bite-delay-ms, 0ms); }
-.penguin.bite-big .penguin-jaw--top { animation: penguinJawTopBig var(--bite-ms, 180ms) ease-in-out var(--bite-delay-ms, 0ms); }
-.penguin.bite-big .penguin-jaw--bot { animation: penguinJawBotBig var(--bite-ms, 180ms) ease-in-out var(--bite-delay-ms, 0ms); }
+.penguin.bite-small .penguin-jaw--back { animation: penguinBackJawSmall var(--bite-ms, 140ms) ease-in-out var(--bite-delay-ms, 0ms); }
 
 .penguin.bite-small { animation: penguinNudgeSmall var(--bite-ms, 140ms) ease-in-out var(--bite-delay-ms, 0ms); }
-.penguin.bite-big { animation: penguinNudgeBig var(--bite-ms, 180ms) ease-in-out var(--bite-delay-ms, 0ms); }
 
 /* Head height pulse during bite */
 .penguin.bite-small #penguin-head,
 .penguin.bite-small .penguin-head {
     transform-origin: 50% 50%;
     animation: penguinHeadStretchSmall var(--bite-ms, 140ms) ease-in-out var(--bite-delay-ms, 0ms);
-}
-
-.penguin.bite-big #penguin-head,
-.penguin.bite-big .penguin-head {
-    transform-origin: 50% 50%;
-    animation: penguinHeadStretchBig var(--bite-ms, 180ms) ease-in-out var(--bite-delay-ms, 0ms);
 }
 
 

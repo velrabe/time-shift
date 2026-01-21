@@ -11,9 +11,8 @@ class PerkSystem {
     }
 
     setupEventListeners() {
-        // NOTE: streak начисляется напрямую из Director.update() через perks.addStreak().
-        // Событие DANGER_PASSED оставляем для UI/аналитики, но здесь НЕ увеличиваем streak,
-        // иначе легко получить двойное начисление.
+        // NOTE: streak начисляется из события FOOD_EATEN (см. Game),
+        // поэтому здесь ничего не добавляем, только обнуляем по смерти при необходимости.
 
         eventBus.on('DEATH', () => {
             // Если second life не накоплена — стрик сгорает на смерти

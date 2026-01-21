@@ -8,12 +8,24 @@ class Game {
         this.storage = new StorageSystem();
         this.gamePush = new GamePushSystem();
         this.renderer = new Renderer();
+        this.playerNameManager = new PlayerNameManager(this.gamePush, this.storage);
         
         this.state = 'MENU'; // MENU, RUNNING, PAUSED, GAME_OVER, COUNTDOWN
         this.bestScore = 0;
         this.soundMuted = false;
         this.lastSnapshotTime = 0;
         this.snapshotInterval = 1000; // сохранять каждую секунду
+
+        // Leaderboard cache (top10 + player rating)
+        this.leaderboardData = {
+            topPlayers: [],
+            player: null,
+            updatedAt: 0,
+            loading: false,
+            error: null
+        };
+        this._leaderboardRefreshInFlight = null;
+        this._pausedByLeaderboard = false;
         
         this.animationFrameId = null;
         this.lastUpdateTime = 0;
@@ -52,6 +64,8 @@ class Game {
         this._initPromise = (async () => {
         // Инициализация GamePush
         await this.gamePush.init();
+        // Имя игрока (случайный ник, если ещё нет)
+        await this.playerNameManager.ensurePlayerNameInitialized();
         
         // Загрузка best score
         const gpBestScore = this.gamePush.getBestScore();
@@ -76,6 +90,9 @@ class Game {
         
         // Обновление UI
         this.updateUI();
+
+        // Первичная загрузка лидерборда (топ10 + позиция игрока)
+        this.refreshLeaderboard('init');
 
         this.isInitialized = true;
 
@@ -146,9 +163,23 @@ class Game {
 
         // Горячие клавиши
         document.addEventListener('keydown', (e) => {
-            if (this.state !== 'RUNNING') return;
-            
             const key = e.key;
+            if (key === 'Escape') {
+                // Если открыта таблица лидеров — закрываем её и продолжаем игру
+                if (this.renderer?.isLeaderboardModalOpen?.()) {
+                    e.preventDefault();
+                    this.closeLeaderboardModal();
+                    return;
+                }
+                if (this.state === 'RUNNING') {
+                    e.preventDefault();
+                    this.pause();
+                }
+                return;
+            }
+
+            if (this.state !== 'RUNNING') return;
+
             if (key === ' ' || key === 'Spacebar') {
                 // Не даём автоповтору клавиши превращать укус в "авто-режим"
                 if (e.repeat) return;
@@ -157,9 +188,6 @@ class Game {
                 if (this.renderer) {
                     this.renderer.openMouth(500);
                 }
-            } else if (key === 'Escape') {
-                e.preventDefault();
-                this.pause();
             }
         });
 
@@ -198,6 +226,78 @@ class Game {
         const slowDownBtn = document.getElementById('slowdown-btn');
         if (slowDownBtn) {
             slowDownBtn.addEventListener('click', () => this.useSlowDown());
+        }
+
+        // Открытие таблицы лидеров по клику на BEST
+        const bestHint = document.getElementById('best-hint');
+        if (bestHint) {
+            bestHint.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                this.openLeaderboardModal();
+            });
+            bestHint.addEventListener('keydown', (e) => {
+                const k = e.key;
+                if (k === 'Enter' || k === ' ' || k === 'Spacebar') {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    this.openLeaderboardModal();
+                }
+            });
+        }
+
+        // Закрытие таблицы лидеров
+        const lbCloseBtn = this.renderer?.leaderboardCloseBtn || document.getElementById('leaderboard-close-btn');
+        if (lbCloseBtn) {
+            lbCloseBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                this.closeLeaderboardModal();
+            });
+        }
+
+        // Клик по фону модалки — тоже закрывает
+        const lbModal = this.renderer?.leaderboardModal || document.getElementById('leaderboard-modal');
+        if (lbModal) {
+            lbModal.addEventListener('click', (e) => {
+                if (e.target === lbModal) {
+                    this.closeLeaderboardModal();
+                }
+            });
+        }
+
+        // Управление ником в лидерборде
+        const lbRerollBtn = document.getElementById('leaderboard-reroll-btn');
+        if (lbRerollBtn) {
+            lbRerollBtn.addEventListener('click', async (e) => {
+                e.preventDefault();
+                try {
+                    await this.playerNameManager.rerollName();
+                    this.playerNameManager.markHintSeen();
+                    this.refreshLeaderboard('reroll');
+                } catch (err) {
+                    // ignore
+                }
+            });
+        }
+
+        const lbEditBtn = document.getElementById('leaderboard-edit-btn');
+        if (lbEditBtn) {
+            lbEditBtn.addEventListener('click', async (e) => {
+                e.preventDefault();
+                const current = this.playerNameManager.getCurrentName() || '';
+                const next = window.prompt('Enter your name', current);
+                if (next == null) return;
+                try {
+                    await this.playerNameManager.setCustomName(next);
+                    this.playerNameManager.markHintSeen();
+                    this.refreshLeaderboard('edit');
+                } catch (err) {
+                    if (err && err.code === 'INVALID_NAME') {
+                        window.alert('Name must be 2-20 letters/numbers.');
+                    }
+                }
+            });
         }
 
         // Ползунок громкости
@@ -265,10 +365,17 @@ class Game {
         try {
             // Скрываем стартовый экран
             this.renderer.hideStartScreen();
-            
+
+            // Обновляем лидерборд при старте новой игры (стартовый синк)
+            this.refreshLeaderboard('start');
+
             // Сбрасываем изображения пингвина в нормальное состояние
             this.renderer?.resetPenguinState?.();
-            
+
+            // Сбрасываем счёт забега
+            this.score = 0;
+            this.updateUI();
+
             this.state = 'COUNTDOWN';
             this.timer.reset();
             this.director = null;
@@ -496,6 +603,8 @@ class Game {
         if (this.state !== 'RUNNING') return;
         
         this.state = 'PAUSED';
+        // Важно: чтобы после паузы таймер не "догонял" пропущенные тики пачкой
+        if (this.timer) this.timer.lastStepTime = 0;
         // Паузим музыку
         this.audio.pause();
         
@@ -519,6 +628,8 @@ class Game {
         await this.renderer.showCountdown();
         
         this.state = 'RUNNING';
+        // Важно: чтобы после countdown таймер не "догонял" время, проведённое в паузе
+        if (this.timer) this.timer.lastStepTime = 0;
         this.lastUpdateTime = performance.now();
         // После резюма снова разрешаем действия
         this.nextActionAllowedAtMs = 0;
@@ -561,7 +672,8 @@ class Game {
         if (score > this.bestScore) {
             this.bestScore = score;
             this.storage.saveLocalBestScore(score);
-            this.gamePush.saveBestScore(score);
+            // Сохраняем рекорд в GamePush и сразу обновляем лидерборд
+            Promise.resolve(this.gamePush.saveBestScore(score)).then(() => this.refreshLeaderboard('bestScore'));
         }
         
         // Проверка доступности Continue
@@ -604,6 +716,8 @@ class Game {
         this.lastActionAtMs = 0;
         this.lastActionCooldownMs = 0;
         this.deathInProgress = false;
+        this.score = 0;
+        this.updateUI();
         
         this.renderer.hideGameOverScreen();
         this.renderer.hidePauseScreen();
@@ -662,6 +776,137 @@ class Game {
         
         // НЕ запускаем игру автоматически - пользователь должен нажать PLAY
         // НЕ отображаем кнопки - они появятся только после старта игры
+    }
+
+    // ===== Leaderboard =====
+    async refreshLeaderboard(reason = 'manual') {
+        // если уже в процессе — не стартуем параллельный запрос
+        if (this._leaderboardRefreshInFlight) return this._leaderboardRefreshInFlight;
+
+        this.leaderboardData.loading = true;
+        this.leaderboardData.error = null;
+
+        this._leaderboardRefreshInFlight = (async () => {
+            try {
+                // Если SDK недоступен — просто помечаем ошибку (модалка покажет fallback)
+                if (!this.gamePush?.isLeaderboardsAvailable?.()) {
+                    this.leaderboardData.topPlayers = [];
+                    this.leaderboardData.player = null;
+                    this.leaderboardData.updatedAt = Date.now();
+                    this.leaderboardData.error = 'Leaderboards not available';
+                    return;
+                }
+
+                const snap = await this.gamePush.fetchLeaderboardSnapshot(10);
+                this.leaderboardData.topPlayers = Array.isArray(snap?.topPlayers) ? snap.topPlayers : [];
+                this.leaderboardData.player = snap?.player || null;
+                const name = await this.playerNameManager.ensurePlayerNameInitialized();
+                const meta = this.playerNameManager.getMeta();
+                this.leaderboardData.playerName = name;
+                this.leaderboardData.nameHintSeen = meta.hintSeen;
+                this.leaderboardData.playerNameEdited = meta.edited;
+                this.leaderboardData.updatedAt = Date.now();
+                this.leaderboardData.error = null;
+            } catch (e) {
+                this.leaderboardData.topPlayers = [];
+                this.leaderboardData.player = null;
+                this.leaderboardData.updatedAt = Date.now();
+                this.leaderboardData.error = 'Failed to load leaderboard';
+            } finally {
+                this.leaderboardData.loading = false;
+                this._leaderboardRefreshInFlight = null;
+
+                // Если модалка сейчас открыта — перерисуем её свежими данными
+                if (this.renderer?.isLeaderboardModalOpen?.()) {
+                    this.renderer.renderLeaderboardModal(this.leaderboardData);
+                }
+            }
+        })();
+
+        return this._leaderboardRefreshInFlight;
+    }
+
+    pauseForLeaderboard() {
+        if (this.state !== 'RUNNING') return;
+        this._pausedByLeaderboard = true;
+        this.state = 'PAUSED';
+
+        // Останавливаем игровой цикл (таймер/лента/коллизии)
+        if (this.animationFrameId) {
+            cancelAnimationFrame(this.animationFrameId);
+            this.animationFrameId = null;
+        }
+
+        // Стопаем активные анимации и звук
+        try {
+            if (this.timer) this.timer.lastStepTime = 0;
+            this.audio.pause();
+            this.renderer?.stopCircleAnimation?.();
+            this.renderer?.stopStripAnimation?.();
+        } catch (e) {
+            // ignore
+        }
+    }
+
+    resumeFromLeaderboard() {
+        if (this.state !== 'PAUSED') return;
+        if (!this._pausedByLeaderboard) return;
+
+        this._pausedByLeaderboard = false;
+        // Не показываем countdown — игра продолжается сразу
+        this.state = 'RUNNING';
+        if (this.timer) this.timer.lastStepTime = 0;
+        this.lastUpdateTime = performance.now();
+        this.audio.play();
+        this.gameLoop();
+    }
+
+    openLeaderboardModal() {
+        // Подтягиваем свежие данные (не блокируем открытие)
+        this.refreshLeaderboard('open');
+
+        // Рендерим то, что есть в кеше (или fallback)
+        this.renderer?.renderLeaderboardModal?.(this.leaderboardData);
+        this.renderer?.showLeaderboardModal?.();
+
+        // Ставим игру на паузу, если она шла
+        if (this.state === 'RUNNING') {
+            this.pauseForLeaderboard();
+        }
+    }
+
+    closeLeaderboardModal() {
+        this.renderer?.hideLeaderboardModal?.();
+
+        // Если пауза была именно из-за лидерборда — продолжаем игру
+        if (this._pausedByLeaderboard) {
+            this.resumeFromLeaderboard();
+        }
+    }
+
+    // Debug: полный сброс прогресса (локально + GamePush)
+    async debugResetProgress() {
+        try {
+            this.storage?.clearAll?.();
+        } catch (e) {
+            // ignore
+        }
+        try {
+            await this.gamePush?.resetBestScore?.();
+        } catch (e) {
+            // ignore
+        }
+
+        this.bestScore = 0;
+        this.score = 0;
+        this.updateUI();
+
+        // Обновим лидерборд, чтобы подтянуть обнулённый счёт
+        this.refreshLeaderboard('debugReset');
+
+        // Небольшой визуальный фидбек в консоли
+        // eslint-disable-next-line no-console
+        console.log('[DEBUG] Progress has been reset (local + GamePush)');
     }
 }
 

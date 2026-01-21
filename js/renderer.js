@@ -5,6 +5,12 @@ class Renderer {
         this.focusZone = document.getElementById('focus-zone');
         this.controlButtons = document.getElementById('control-buttons');
         this.perksContainer = document.getElementById('perks-container'); // legacy (может быть null)
+
+        // Leaderboard modal UI
+        this.leaderboardModal = document.getElementById('leaderboard-modal');
+        this.leaderboardListEl = document.getElementById('leaderboard-list');
+        this.leaderboardMeEl = document.getElementById('leaderboard-me');
+        this.leaderboardCloseBtn = document.getElementById('leaderboard-close-btn');
         
         this.focusZoneCenter = 0; // будет вычислено
         
@@ -87,6 +93,30 @@ class Renderer {
             lastTrackedWasColliding: false,
             lastDeathValue: null
         };
+
+        // Debug-only reset button (полный сброс прогресса)
+        if (this.debug) {
+            try {
+                const hudActions = document.getElementById('hud-actions');
+                if (hudActions) {
+                    const btn = document.createElement('button');
+                    btn.type = 'button';
+                    btn.className = 'icon-btn';
+                    btn.textContent = 'RST';
+                    btn.title = 'Reset local & GamePush progress (debug)';
+                    btn.addEventListener('click', (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        if (window.gameInstance && typeof window.gameInstance.debugResetProgress === 'function') {
+                            window.gameInstance.debugResetProgress();
+                        }
+                    });
+                    hudActions.appendChild(btn);
+                }
+            } catch (e) {
+                // ignore
+            }
+        }
     }
 
     dbgLog(key, payload, minIntervalMs = 250) {
@@ -1990,6 +2020,135 @@ class Renderer {
         const pauseScreen = document.getElementById('pause-screen');
         if (pauseScreen) {
             pauseScreen.classList.add('hidden');
+        }
+    }
+
+    // ===== Leaderboard modal =====
+    isLeaderboardModalOpen() {
+        return !!(this.leaderboardModal && !this.leaderboardModal.classList.contains('hidden'));
+    }
+
+    showLeaderboardModal() {
+        if (!this.leaderboardModal) return;
+        this.leaderboardModal.classList.remove('hidden');
+    }
+
+    hideLeaderboardModal() {
+        if (!this.leaderboardModal) return;
+        this.leaderboardModal.classList.add('hidden');
+    }
+
+    _lbGetName(p) {
+        return (
+            p?.name ||
+            p?.nickname ||
+            p?.publicName ||
+            p?.username ||
+            p?.login ||
+            p?.id ||
+            'Player'
+        );
+    }
+
+    _lbGetScore(p) {
+        const v =
+            (typeof p?.score === 'number' ? p.score : null) ??
+            (typeof p?.data?.score === 'number' ? p.data.score : null) ??
+            (typeof p?.fields?.score === 'number' ? p.fields.score : null) ??
+            (typeof p?.player?.score === 'number' ? p.player.score : null) ??
+            0;
+        return Math.max(0, Math.floor(Number(v) || 0));
+    }
+
+    _lbGetRank(p, fallbackRank) {
+        const r =
+            (typeof p?.rank === 'number' ? p.rank : null) ??
+            (typeof p?.place === 'number' ? p.place : null) ??
+            (typeof p?.position === 'number' ? p.position : null) ??
+            (typeof p?.rating === 'number' ? p.rating : null) ??
+            fallbackRank;
+        return Math.max(1, Math.floor(Number(r) || fallbackRank || 1));
+    }
+
+    _lbMakeRow({ rank, name, score, isMe = false }) {
+        const row = document.createElement('div');
+        row.className = `leaderboard-row${isMe ? ' leaderboard-row--me' : ''}`;
+        row.setAttribute('role', 'row');
+
+        const cRank = document.createElement('div');
+        cRank.className = 'lb-col lb-col--rank';
+        cRank.setAttribute('role', 'cell');
+        cRank.textContent = String(rank);
+
+        const cName = document.createElement('div');
+        cName.className = 'lb-col lb-col--name';
+        cName.setAttribute('role', 'cell');
+        cName.textContent = String(name || '');
+
+        const cScore = document.createElement('div');
+        cScore.className = 'lb-col lb-col--score';
+        cScore.setAttribute('role', 'cell');
+        cScore.textContent = String(score);
+
+        row.appendChild(cRank);
+        row.appendChild(cName);
+        row.appendChild(cScore);
+        return row;
+    }
+
+    renderLeaderboardModal(data) {
+        if (!this.leaderboardListEl || !this.leaderboardMeEl) return;
+
+        const topPlayers = Array.isArray(data?.topPlayers) ? data.topPlayers : [];
+        const me = data?.player || null;
+        const error = data?.error || null;
+        const overrideName = data?.playerName || null;
+        const nameHintSeen = !!data?.nameHintSeen;
+
+        this.leaderboardListEl.innerHTML = '';
+        this.leaderboardMeEl.innerHTML = '';
+
+        if (error) {
+            const msg = document.createElement('div');
+            msg.className = 'leaderboard-empty';
+            msg.textContent = 'Leaderboard unavailable';
+            this.leaderboardListEl.appendChild(msg);
+        } else if (topPlayers.length === 0) {
+            const msg = document.createElement('div');
+            msg.className = 'leaderboard-empty';
+            msg.textContent = 'No results yet';
+            this.leaderboardListEl.appendChild(msg);
+        } else {
+            topPlayers.slice(0, 10).forEach((p, idx) => {
+                const rank = this._lbGetRank(p, idx + 1);
+                const name = this._lbGetName(p);
+                const score = this._lbGetScore(p);
+                this.leaderboardListEl.appendChild(this._lbMakeRow({ rank, name, score, isMe: false }));
+            });
+        }
+
+        if (me) {
+            const rank = this._lbGetRank(me, 0);
+            const name = overrideName || this._lbGetName(me);
+            const score = this._lbGetScore(me);
+            this.leaderboardMeEl.appendChild(this._lbMakeRow({ rank, name, score, isMe: true }));
+        } else {
+            const msg = document.createElement('div');
+            msg.className = 'leaderboard-empty';
+            msg.textContent = 'Your position is not available yet';
+            this.leaderboardMeEl.appendChild(msg);
+        }
+
+        // Текст подсказки про ник
+        const hintEl = document.getElementById('leaderboard-name-hint');
+        if (hintEl) {
+            if (!nameHintSeen) {
+                hintEl.textContent = 'We gave you a name. You can change it anytime.';
+            } else if (overrideName) {
+                hintEl.textContent = `Your name is ${overrideName}. You can change it anytime.`;
+            } else {
+                hintEl.textContent = 'You can change your name anytime.';
+            }
         }
     }
 

@@ -12,7 +12,7 @@
         <div id="ui-overlay">
             <div id="hud">
                 <div id="hud-top">
-                    <div id="best-hint" class="hud-chip">
+                    <div id="best-hint" class="hud-chip" role="button" tabindex="0" aria-label="Open leaderboard">
                         <div class="hud-chip-label">best</div>
                         <div id="best-score" class="hud-chip-value">0</div>
                     </div>
@@ -84,6 +84,38 @@
             </div>
         </div>
 
+        <!-- Leaderboard Modal -->
+        <div id="leaderboard-modal" class="overlay-screen hidden" role="dialog" aria-modal="true" aria-label="Leaderboard">
+            <div class="leaderboard-content">
+                <div class="leaderboard-header">
+                    <div class="leaderboard-title">Leaderboard</div>
+                    <button id="leaderboard-close-btn" class="icon-btn" type="button" aria-label="Close leaderboard" title="Close">CLOSE</button>
+                </div>
+
+                <div class="leaderboard-name-bar">
+                    <div id="leaderboard-name-hint" class="leaderboard-name-hint">
+                        We gave you a name. You can change it anytime.
+                    </div>
+                    <div class="leaderboard-name-actions">
+                        <button id="leaderboard-reroll-btn" class="ui-btn lb-small-btn" type="button">Reroll</button>
+                        <button id="leaderboard-edit-btn" class="ui-btn lb-small-btn" type="button">Edit</button>
+                    </div>
+                </div>
+
+                <div class="leaderboard-table" role="table" aria-label="Top players">
+                    <div class="leaderboard-row leaderboard-row--head" role="row">
+                        <div class="lb-col lb-col--rank" role="columnheader">#</div>
+                        <div class="lb-col lb-col--name" role="columnheader">Name</div>
+                        <div class="lb-col lb-col--score" role="columnheader">Score</div>
+                    </div>
+
+                    <div id="leaderboard-list" class="leaderboard-list" role="rowgroup" aria-label="Top 10"></div>
+
+                    <div id="leaderboard-me" class="leaderboard-me" role="rowgroup" aria-label="Your position"></div>
+                </div>
+            </div>
+        </div>
+
         <!-- Game Over Screen -->
         <div id="game-over-screen" class="overlay-screen hidden">
             <div class="overlay-content">
@@ -140,6 +172,7 @@
     <script src="js/audio.js"></script>
     <script src="js/storage.js"></script>
     <script src="js/gamepush.js"></script>
+    <script src="js/playerName.js"></script>
     <script src="js/renderer.js"></script>
     <script src="js/game.js"></script>
     <script src="js/main.js"></script>

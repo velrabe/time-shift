@@ -66,5 +66,19 @@ class StorageSystem {
         settings.bestScore = score;
         this.saveSettings(settings);
     }
+
+    // Полный сброс локального состояния (debug)
+    clearAll() {
+        try {
+            localStorage.removeItem(this.SNAPSHOT_KEY);
+        } catch (e) {
+            console.warn('Failed to clear snapshot:', e);
+        }
+        try {
+            localStorage.removeItem(this.SETTINGS_KEY);
+        } catch (e) {
+            console.warn('Failed to clear settings:', e);
+        }
+    }
 }
 

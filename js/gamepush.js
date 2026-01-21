@@ -90,6 +90,20 @@ class GamePushSystem {
         }
     }
 
+    // Сброс best score до 0 (debug)
+    async resetBestScore() {
+        if (!this.ready || !this.gp || !this.gp.player) return;
+        try {
+            this.gp.player.set('score', 0);
+            await this.gp.player.sync();
+            if (!this.playerData) this.playerData = {};
+            this.playerData.score = 0;
+        } catch (e) {
+            // eslint-disable-next-line no-console
+            console.warn('Failed to reset best score in GamePush:', e);
+        }
+    }
+
     // Сохранение снапшота
     async saveSnapshot(snapshot) {
         if (!this.ready || !this.gp || !this.gp.player) return;
@@ -121,6 +135,92 @@ class GamePushSystem {
         if (snapshotScore > currentBest) {
             await this.saveBestScore(snapshotScore);
         }
+    }
+
+    // ===== Player name helpers =====
+    getPlayerName() {
+        if (!this.ready || !this.playerData) return null;
+        const p = this.playerData;
+        return (
+            p.name ||
+            p.nickname ||
+            p.publicName ||
+            p.username ||
+            p.login ||
+            null
+        );
+    }
+
+    async savePlayerName(name) {
+        if (!this.ready || !this.gp || !this.gp.player) return;
+        if (typeof name !== 'string' || !name.trim()) return;
+        try {
+            this.gp.player.set('name', name);
+            await this.gp.player.sync();
+            if (!this.playerData) this.playerData = {};
+            this.playerData.name = name;
+        } catch (e) {
+            // eslint-disable-next-line no-console
+            console.warn('Failed to save player name to GamePush:', e);
+        }
+    }
+
+    // ===== Leaderboards =====
+    // Общая таблица лидеров по полю игрока `score`
+    // Документация: https://docs.gamepush.com/ru/docs/leaderboards/
+
+    isLeaderboardsAvailable() {
+        return !!(this.ready && this.gp && this.gp.leaderboard && typeof this.gp.leaderboard.fetch === 'function');
+    }
+
+    // top 10 игроков (сортировка по score по убыванию)
+    async fetchTopLeaderboard(limit = 10) {
+        if (!this.isLeaderboardsAvailable()) return { topPlayers: [] };
+        try {
+            const res = await this.gp.leaderboard.fetch({
+                orderBy: ['score'],
+                order: 'DESC',
+                limit: Math.max(1, Math.min(50, Number(limit) || 10)),
+                includeFields: ['rank']
+            });
+            const topPlayers = res?.topPlayers || res?.players || [];
+            return { topPlayers: Array.isArray(topPlayers) ? topPlayers : [] };
+        } catch (e) {
+            console.warn('Failed to fetch leaderboard top players:', e);
+            return { topPlayers: [] };
+        }
+    }
+
+    // Позиция игрока в рейтинге (без "соседей", только сам игрок)
+    async fetchMyLeaderboardRating() {
+        if (!this.ready || !this.gp?.leaderboard || typeof this.gp.leaderboard.fetchPlayerRating !== 'function') {
+            return { player: null };
+        }
+        try {
+            const res = await this.gp.leaderboard.fetchPlayerRating({
+                orderBy: ['score'],
+                order: 'DESC',
+                showNearest: 0,
+                includeFields: ['rank']
+            });
+            return { player: res?.player || null };
+        } catch (e) {
+            console.warn('Failed to fetch leaderboard player rating:', e);
+            return { player: null };
+        }
+    }
+
+    // Единый "снимок" лидерборда: топ-10 + позиция игрока
+    async fetchLeaderboardSnapshot(limit = 10) {
+        if (!this.ready) return { topPlayers: [], player: null };
+        const [top, rating] = await Promise.all([
+            this.fetchTopLeaderboard(limit),
+            this.fetchMyLeaderboardRating()
+        ]);
+        return {
+            topPlayers: Array.isArray(top?.topPlayers) ? top.topPlayers : [],
+            player: rating?.player || null
+        };
     }
 }
 

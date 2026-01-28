@@ -63,6 +63,7 @@ class Renderer {
         this._beltPosition = 0; // текущая позиция ленты в пикселях
         this._lastBeltUpdateTime = 0;
         this._beltStartAdjusted = false;
+        this._beltPauseStartTime = null; // Время начала паузы ленты (для корректировки при возобновлении)
         this._lastBaseSpeedPxPerMs = this._beltSpeed; // обновляется в updateConveyor
         // Bite-impulse (distance-based):
         // нажатие даёт фиксированную ДОПОЛНИТЕЛЬНУЮ протяжку ленты (в px), независимо от текущей скорости.
@@ -76,6 +77,9 @@ class Renderer {
         // NOTE: browser can't list /img, so we keep an explicit list.
         this.foodBases = ['f1', 'f2', 'f3', 'f4', 'f5'];
         
+        this._lastStreak = 0;
+        this._streakAnimTimeoutId = null;
+
         this.setupFocusZone();
         this.setupEventListeners();
         this.setupFocusZoneAnimation();
@@ -1596,6 +1600,25 @@ class Renderer {
         }
     }
     
+    // Пауза обновления ленты (сохраняем текущее время, чтобы не "догонять" при возобновлении)
+    pauseBeltUpdate() {
+        // Сохраняем текущее время обновления, чтобы при возобновлении скорректировать его
+        // Это предотвратит "догоняние" пропущенного времени
+        if (this._lastBeltUpdateTime > 0) {
+            this._beltPauseStartTime = this._lastBeltUpdateTime;
+        }
+    }
+    
+    // Возобновление обновления ленты (корректируем время на длительность паузы)
+    resumeBeltUpdate(pauseDurationMs) {
+        if (this._beltPauseStartTime && pauseDurationMs > 0) {
+            // Корректируем время обновления: добавляем длительность паузы,
+            // чтобы следующая дельта времени была правильной
+            this._lastBeltUpdateTime = this._beltPauseStartTime + pauseDurationMs;
+            this._beltPauseStartTime = null;
+        }
+    }
+    
     // ========== СИНХРОННАЯ АНИМАЦИЯ (при TICK_STEP) ==========
 
     // Единая обработка смены шага (auto или manual)
@@ -1909,6 +1932,13 @@ class Renderer {
             return;
         }
 
+        // Проверяем, есть ли уже статическая кнопка BITE в HTML
+        const existingBiteBtn = document.getElementById('bite-btn');
+        if (existingBiteBtn && existingBiteBtn.parentElement === this.controlButtons) {
+            // Кнопка BITE уже есть в HTML, не создаем новую
+            return;
+        }
+
         // В новой механике на экране всегда 1 кнопка для открытия рта
         this.controlButtons.innerHTML = '';
 
@@ -1972,25 +2002,56 @@ class Renderer {
     updateUI(state) {
         const scoreValueEl = document.getElementById('score-value');
         const bestScoreEl = document.getElementById('best-score');
+        const bestRankEl = document.getElementById('best-rank');
         const streakFillEl = document.getElementById('streak-fill');
         const streakTextEl = document.getElementById('streak-text');
+        const streakProgressEl = document.getElementById('streak-progress');
         const slowdownBtn = document.getElementById('slowdown-btn');
         const soundBtn = document.getElementById('sound-btn');
 
-        // Очки теперь считаются от реально съеденных объектов (state.score),
-        // а maxReached используем только как резервный fallback.
-        const score = Math.floor(state?.score ?? state?.timer?.maxReached ?? 0);
+        // Единственный источник счёта — количество съеденных объектов (state.score).
+        const score = Math.floor(state?.score ?? 0);
         const best = Math.floor(state?.bestScore ?? 0);
         const streak = Math.max(0, Math.min(50, Math.floor(state?.streakPoints ?? state?.dangerPassedStreak ?? 0)));
+        const rank = typeof state?.leaderboardRank === 'number' ? state.leaderboardRank : null;
 
         if (scoreValueEl) scoreValueEl.textContent = score;
         if (bestScoreEl) bestScoreEl.textContent = best;
+        if (bestRankEl) {
+            bestRankEl.textContent = rank && rank > 0 ? `#${rank}` : '#—';
+        }
 
         if (streakFillEl) {
             streakFillEl.style.width = `${(streak / 50) * 100}%`;
+            const fillRadius = Math.min(streak, 8);
+            streakFillEl.style.setProperty('--streak-fill-radius', `${fillRadius}px`);
         }
         if (streakTextEl) {
             streakTextEl.textContent = `${streak}/50`;
+        }
+
+        if (streakProgressEl) {
+            const prev = this._lastStreak ?? 0;
+            if (streak > prev) {
+                streakProgressEl.classList.remove('streak-loss');
+                streakProgressEl.classList.add('streak-hit');
+                if (this._streakAnimTimeoutId) {
+                    window.clearTimeout(this._streakAnimTimeoutId);
+                }
+                this._streakAnimTimeoutId = window.setTimeout(() => {
+                    streakProgressEl.classList.remove('streak-hit');
+                }, 220);
+            } else if (streak < prev) {
+                streakProgressEl.classList.remove('streak-hit');
+                streakProgressEl.classList.add('streak-loss');
+                if (this._streakAnimTimeoutId) {
+                    window.clearTimeout(this._streakAnimTimeoutId);
+                }
+                this._streakAnimTimeoutId = window.setTimeout(() => {
+                    streakProgressEl.classList.remove('streak-loss');
+                }, 280);
+            }
+            this._lastStreak = streak;
         }
 
         // Slow down button state
@@ -2002,8 +2063,11 @@ class Renderer {
 
         // Sound icon state
         if (soundBtn) {
-            // Keep UI consistent with reference-style (no emoji)
-            soundBtn.textContent = state?.soundMuted ? 'MUT' : 'SND';
+            const icon = soundBtn.querySelector('img');
+            if (icon) {
+                icon.src = state?.soundMuted ? 'img/ui/sound-off.svg' : 'img/ui/sound-on.svg';
+            }
+            soundBtn.classList.toggle('is-muted', !!state?.soundMuted);
         }
     }
 

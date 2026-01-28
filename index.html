@@ -13,11 +13,19 @@
             <div id="hud">
                 <div id="hud-top">
                     <div id="best-hint" class="hud-chip" role="button" tabindex="0" aria-label="Open leaderboard">
-                        <div class="hud-chip-label">best</div>
-                        <div id="best-score" class="hud-chip-value">0</div>
+                        <div class="hud-chip-icon-large">
+                            <img src="img/ui/cup.svg" alt="">
+                        </div>
+                        <div class="hud-chip-content">
+                            <div class="hud-chip-main">
+                                <div id="best-score" class="hud-chip-value">0</div>
+                            </div>
+                            <div id="best-rank" class="hud-chip-rank">#—</div>
+                        </div>
                     </div>
 
                     <div id="streak-progress" aria-label="Streak progress">
+                        <div id="streak-label">STREAK</div>
                         <div class="streak-bar" role="progressbar" aria-valuemin="0" aria-valuemax="50" aria-valuenow="0">
                             <div id="streak-fill"></div>
                         </div>
@@ -25,8 +33,12 @@
                     </div>
 
                     <div id="hud-actions">
-                        <button id="sound-btn" class="icon-btn" aria-label="Sound" title="Sound">SND</button>
-                        <button id="pause-btn" class="icon-btn" aria-label="Pause" title="Pause">PAU</button>
+                        <button id="sound-btn" class="icon-btn icon-btn--sound" aria-label="Toggle sound" title="Sound">
+                            <img id="sound-icon" src="img/ui/sound-on.svg" alt="" aria-hidden="true">
+                        </button>
+                        <button id="pause-btn" class="icon-btn icon-btn--pause" aria-label="Pause" title="Pause">
+                            <img src="img/ui/pause.svg" alt="" aria-hidden="true">
+                        </button>
                     </div>
                 </div>
 
@@ -66,8 +78,26 @@
         <!-- Control Buttons -->
         <div id="controls">
             <div id="controls-inner">
-                <div id="control-buttons"></div>
-                <button id="slowdown-btn" class="ui-btn slow-btn" disabled>Slow down (-10)</button>
+                <div id="control-buttons">
+                    <button
+                        id="bite-btn"
+                        class="control-btn bite-btn"
+                        type="button"
+                        aria-label="Bite"
+                    >
+                        BITE
+                    </button>
+                    <button
+                        id="slowdown-btn"
+                        class="ui-btn slow-btn perk-btn"
+                        type="button"
+                        disabled
+                        aria-label="Slow time for 2s"
+                        title="Slow time for 2s"
+                    >
+                        <img src="img/ui/slow-mode.svg" alt="" aria-hidden="true">
+                    </button>
+                </div>
             </div>
         </div>
 
@@ -89,7 +119,7 @@
             <div class="leaderboard-content">
                 <div class="leaderboard-header">
                     <div class="leaderboard-title">Leaderboard</div>
-                    <button id="leaderboard-close-btn" class="icon-btn" type="button" aria-label="Close leaderboard" title="Close">CLOSE</button>
+                    <button id="leaderboard-close-btn" class="ui-btn lb-small-btn" type="button" aria-label="Close leaderboard" title="Close">CLOSE</button>
                 </div>
 
                 <div class="leaderboard-name-bar">

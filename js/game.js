@@ -26,6 +26,7 @@ class Game {
         };
         this._leaderboardRefreshInFlight = null;
         this._pausedByLeaderboard = false;
+        this._pauseStartTime = null; // Время начала паузы для лидерборда
         
         this.animationFrameId = null;
         this.lastUpdateTime = 0;
@@ -228,6 +229,19 @@ class Game {
             slowDownBtn.addEventListener('click', () => this.useSlowDown());
         }
 
+        const biteBtn = document.getElementById('bite-btn');
+        if (biteBtn) {
+            const onBiteClick = (e) => {
+                e.preventDefault();
+                if (this.state !== 'RUNNING') return;
+                if (this.renderer && typeof this.renderer.openMouth === 'function') {
+                    this.renderer.openMouth(500);
+                }
+            };
+            biteBtn.addEventListener('click', onBiteClick);
+            biteBtn.addEventListener('touchstart', onBiteClick);
+        }
+
         // Открытие таблицы лидеров по клику на BEST
         const bestHint = document.getElementById('best-hint');
         if (bestHint) {
@@ -405,10 +419,7 @@ class Game {
         this.lastActionCooldownMs = 0;
         this.deathInProgress = false;
         
-        // Генерация кнопки управления (одна кнопка для открытия рта)
-        if (this.renderer) {
-            this.renderer.renderControlButtons([]);
-        }
+        // Кнопка BITE уже есть в HTML, не создаем динамически
         
         // Запуск аудио при старте таймера (после взаимодействия пользователя)
         this.audio.play();
@@ -560,8 +571,23 @@ class Game {
             score: this.score || 0,
             bestScore: this.bestScore,
             gameStatus: this.state,
-            soundMuted: this.soundMuted
+            soundMuted: this.soundMuted,
+            leaderboardRank: this._getLeaderboardRankForHUD()
         };
+    }
+
+    _getLeaderboardRankForHUD() {
+        const player = this.leaderboardData?.player;
+        if (!player) return null;
+        const rawRank =
+            (typeof player.rank === 'number' ? player.rank : null) ??
+            (typeof player.place === 'number' ? player.place : null) ??
+            (typeof player.position === 'number' ? player.position : null) ??
+            (typeof player.rating === 'number' ? player.rating : null) ??
+            null;
+        if (!Number.isFinite(rawRank)) return null;
+        const r = Math.max(1, Math.floor(rawRank));
+        return r;
     }
 
         // Обработка шага таймера (legacy, оставлена для совместимости событийной модели)
@@ -666,9 +692,8 @@ class Game {
             this.animationFrameId = null;
         }
         
-        // Обновление best score: используем новый счёт (по съеденным объектам),
-        // а maxReached оставляем только как резервный fallback.
-        const score = this.score || this.timer.maxReached;
+        // Единственный источник счёта — количество съеденных объектов (this.score).
+        const score = this.score;
         if (score > this.bestScore) {
             this.bestScore = score;
             this.storage.saveLocalBestScore(score);
@@ -829,6 +854,7 @@ class Game {
     pauseForLeaderboard() {
         if (this.state !== 'RUNNING') return;
         this._pausedByLeaderboard = true;
+        this._pauseStartTime = performance.now(); // Сохраняем время начала паузы
         this.state = 'PAUSED';
 
         // Останавливаем игровой цикл (таймер/лента/коллизии)
@@ -843,9 +869,16 @@ class Game {
             this.audio.pause();
             this.renderer?.stopCircleAnimation?.();
             this.renderer?.stopStripAnimation?.();
+            // Сохраняем текущее время обновления ленты, чтобы не "догонять" пропущенное время
+            if (this.renderer && typeof this.renderer.pauseBeltUpdate === 'function') {
+                this.renderer.pauseBeltUpdate();
+            }
         } catch (e) {
             // ignore
         }
+
+        // Уведомляем другие системы о паузе
+        eventBus.emit('PAUSE');
     }
 
     resumeFromLeaderboard() {
@@ -857,22 +890,30 @@ class Game {
         this.state = 'RUNNING';
         if (this.timer) this.timer.lastStepTime = 0;
         this.lastUpdateTime = performance.now();
+        
+        // Корректируем время обновления ленты, чтобы не "догонять" пропущенное время
+        if (this.renderer && typeof this.renderer.resumeBeltUpdate === 'function' && this._pauseStartTime) {
+            const pauseDuration = performance.now() - this._pauseStartTime;
+            this.renderer.resumeBeltUpdate(pauseDuration);
+        }
+        this._pauseStartTime = null;
+        
         this.audio.play();
         this.gameLoop();
     }
 
     openLeaderboardModal() {
+        // Ставим игру на паузу СРАЗУ, если она шла (до асинхронных операций)
+        if (this.state === 'RUNNING') {
+            this.pauseForLeaderboard();
+        }
+
         // Подтягиваем свежие данные (не блокируем открытие)
         this.refreshLeaderboard('open');
 
         // Рендерим то, что есть в кеше (или fallback)
         this.renderer?.renderLeaderboardModal?.(this.leaderboardData);
         this.renderer?.showLeaderboardModal?.();
-
-        // Ставим игру на паузу, если она шла
-        if (this.state === 'RUNNING') {
-            this.pauseForLeaderboard();
-        }
     }
 
     closeLeaderboardModal() {

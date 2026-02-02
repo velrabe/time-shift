@@ -2003,6 +2003,7 @@ class Renderer {
         const scoreValueEl = document.getElementById('score-value');
         const bestScoreEl = document.getElementById('best-score');
         const bestRankEl = document.getElementById('best-rank');
+        const bestHintEl = document.getElementById('best-hint');
         const streakFillEl = document.getElementById('streak-fill');
         const streakTextEl = document.getElementById('streak-text');
         const streakProgressEl = document.getElementById('streak-progress');
@@ -2019,6 +2020,21 @@ class Renderer {
         if (bestScoreEl) bestScoreEl.textContent = best;
         if (bestRankEl) {
             bestRankEl.textContent = rank && rank > 0 ? `#${rank}` : '#—';
+        }
+        // Делает левый блок (cup) квадратом от высоты родителя
+        if (bestHintEl) {
+            const iconBox = bestHintEl.querySelector('.hud-chip-icon-large');
+            if (iconBox) {
+                const h = Math.round(iconBox.getBoundingClientRect().height || 0);
+                if (h > 0) {
+                    const px = `${h}px`;
+                    // фиксируем ширину по высоте (квадрат)
+                    iconBox.style.width = px;
+                    iconBox.style.minWidth = px;
+                    iconBox.style.maxWidth = px;
+                    iconBox.style.flexBasis = px;
+                }
+            }
         }
 
         if (streakFillEl) {

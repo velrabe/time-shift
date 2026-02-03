@@ -87,7 +87,6 @@ body {
     background:
         linear-gradient(90deg, rgba(255, 255, 255, 0.9) 0%, rgba(255, 255, 255, 0.0) 65%),
         rgba(233, 244, 255, 0.5);
-    border: 1px solid rgba(255, 255, 255, 0.1);
     box-shadow: 0 4px 64px rgba(121, 176, 245, 0.7);
     backdrop-filter: blur(16px);
     overflow: hidden;
@@ -115,27 +114,24 @@ body {
     flex-direction: column;
     padding: 0;
     min-width: 0;
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.15) 0%, rgba(220, 235, 255, 0.20) 100%);
 }
 
 .hud-chip-main {
     display: flex;
     flex-direction: column;
     align-items: flex-start;
-    gap: 4px;
     padding: 8px 24px 8px 16px;
 }
 
 .hud-chip-title {
     font-size: 12px;
     font-weight: 600;
-    letter-spacing: 0.06em;
     text-transform: uppercase;
     color: #0e2443;
 }
 
 .hud-chip-value {
-    font-size: 24px;
+    font-size: 20px;
     font-weight: 900;
     line-height: 1.1;
     color: #0e2443;

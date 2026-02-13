@@ -118,12 +118,7 @@ class Game {
             }
         });
 
-        // Новая кнопка открытия рта
-        eventBus.on('MOUTH_BUTTON_CLICKED', () => {
-            if (this.state === 'RUNNING' && this.renderer) {
-                this.renderer.openMouth(500); // Открываем рот на 500мс
-            }
-        });
+        // Mouth hold управляется напрямую из input (pointer/key down/up)
         
         // Делаем экземпляр игры доступным глобально для обработчиков
         window.gameInstance = this;
@@ -185,10 +180,16 @@ class Game {
                 // Не даём автоповтору клавиши превращать укус в "авто-режим"
                 if (e.repeat) return;
                 e.preventDefault();
-                // Кнопка открытия рта
-                if (this.renderer) {
-                    this.renderer.openMouth(500);
-                }
+                // Удержание: открылся рот (дальше закроется по keyup или автозакрытию через 2s)
+                this.renderer?.startBiteHold?.();
+            }
+        });
+
+        document.addEventListener('keyup', (e) => {
+            const key = e.key;
+            if (key === ' ' || key === 'Spacebar') {
+                e.preventDefault();
+                this.renderer?.endBiteHold?.();
             }
         });
 
@@ -231,15 +232,26 @@ class Game {
 
         const biteBtn = document.getElementById('bite-btn');
         if (biteBtn) {
-            const onBiteClick = (e) => {
-                e.preventDefault();
+            let holding = false;
+
+            const startHold = (e) => {
+                e?.preventDefault?.();
                 if (this.state !== 'RUNNING') return;
-                if (this.renderer && typeof this.renderer.openMouth === 'function') {
-                    this.renderer.openMouth(500);
-                }
+                holding = true;
+                this.renderer?.startBiteHold?.();
             };
-            biteBtn.addEventListener('click', onBiteClick);
-            biteBtn.addEventListener('touchstart', onBiteClick);
+
+            const endHold = (e) => {
+                if (!holding) return;
+                e?.preventDefault?.();
+                holding = false;
+                this.renderer?.endBiteHold?.();
+            };
+
+            // Pointer events (мышь + тач)
+            biteBtn.addEventListener('pointerdown', startHold);
+            window.addEventListener('pointerup', endHold);
+            window.addEventListener('pointercancel', endHold);
         }
 
         // Открытие таблицы лидеров по клику на BEST

@@ -70,8 +70,14 @@
                     <img id="penguin-head" class="penguin-layer penguin-head" src="img/head-1.svg" alt="">
                     <!-- Фоновая челюсть (back-jaw) под передними челюстями -->
                     <img id="penguin-back-jaw" class="penguin-layer penguin-jaw penguin-jaw--back" src="img/back-jaw.svg" alt="">
-                    <img id="penguin-top-jaw" class="penguin-layer penguin-jaw penguin-jaw--top" src="img/top-jaw-1.svg" alt="">
-                    <img id="penguin-bot-jaw" class="penguin-layer penguin-jaw penguin-jaw--bot" src="img/bot-jaw-1.svg" alt="">
+                    <div id="penguin-top-jaw" class="penguin-layer penguin-jaw penguin-jaw--top" aria-hidden="true">
+                        <img class="penguin-jaw-img" src="img/top-jaw-1.svg" alt="">
+                        <div class="teeth-collider teeth-collider--top" aria-hidden="true"></div>
+                    </div>
+                    <div id="penguin-bot-jaw" class="penguin-layer penguin-jaw penguin-jaw--bot" aria-hidden="true">
+                        <img class="penguin-jaw-img" src="img/bot-jaw-1.svg" alt="">
+                        <div class="teeth-collider teeth-collider--bot" aria-hidden="true"></div>
+                    </div>
                 </div>
             </div>
         </div>

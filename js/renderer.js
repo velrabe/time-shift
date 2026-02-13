@@ -60,18 +60,21 @@ class Renderer {
         // Новая физическая система: постоянное движение ленты
         // Базовая скорость ленты (ускоряется через таймер.getSpeedMultiplier()).
         this._beltSpeed = 0.08; // пикселей в миллисекунду (чуть быстрее, чем раньше)
+        // Ускорение ленты за каждую съеденную еду (множитель на базовую скорость)
+        this._beltEatMultiplier = 1.0;
+        this._beltEatGrowth = 1.03; // +3% за каждую еду (настраивается)
+        this._foodsEatenForSpeed = 0;
         this._beltPosition = 0; // текущая позиция ленты в пикселях
         this._lastBeltUpdateTime = 0;
         this._beltStartAdjusted = false;
         this._beltPauseStartTime = null; // Время начала паузы ленты (для корректировки при возобновлении)
         this._lastBaseSpeedPxPerMs = this._beltSpeed; // обновляется в updateConveyor
-        // Bite-impulse (distance-based):
-        // нажатие даёт фиксированную ДОПОЛНИТЕЛЬНУЮ протяжку ленты (в px), независимо от текущей скорости.
-        this._biteBoostMultiplier = 5; // во сколько раз быстрее едет лента во время импульса
-        this._biteBoostRemainingExtraPx = 0; // сколько "доп. дистанции" ещё осталось в импульсе
-        this._biteBoostBaseSpeedPxPerMs = 0; // фиксируем базовую скорость в момент нажатия для стабильной синхронизации
-        this._mouthOpen = false; // рот "активен" только пока идёт импульс и есть charge
-        this._mouthCharges = 0; // сколько объектов можно проглотить на один импульс (1)
+
+        // Mouth hold (press & hold)
+        this._mouthHeld = false;
+        this._mouthHoldStartTimeMs = 0;
+        this._mouthOpen = false;
+        this._mouthHoldMaxMs = 2000;
         
         // Food sprites for strip circles (single type)
         // NOTE: browser can't list /img, so we keep an explicit list.
@@ -86,6 +89,16 @@ class Renderer {
         this.autoCalibratePenguinProportions();
         this.setupDebugOverlay();
         this.setupClouds();
+
+        // В debug показываем реальные (ротирующиеся) зубные коллайдеры
+        if (this.debug) {
+            try {
+                const parts = this.getPenguinParts();
+                parts?.root?.classList?.add?.('debug-colliders');
+            } catch (e) {
+                // ignore
+            }
+        }
 
         // Ограниченные debug-логи (без спама каждый кадр)
         this._dbg = {
@@ -142,8 +155,8 @@ class Renderer {
             const parts = this.getPenguinParts();
             if (!parts?.root) return;
             const head = parts.head || document.getElementById('penguin-head');
-            const topJaw = parts.topJaw || document.getElementById('penguin-top-jaw');
-            const botJaw = parts.botJaw || document.getElementById('penguin-bot-jaw');
+            const topJaw = parts.topJawImg || document.getElementById('penguin-top-jaw')?.querySelector?.('img.penguin-jaw-img') || document.getElementById('penguin-top-jaw');
+            const botJaw = parts.botJawImg || document.getElementById('penguin-bot-jaw')?.querySelector?.('img.penguin-jaw-img') || document.getElementById('penguin-bot-jaw');
             if (!head || !topJaw || !botJaw) return;
 
             const ready =
@@ -176,8 +189,8 @@ class Renderer {
         const parts = this.getPenguinParts();
         const imgs = [
             parts?.head || document.getElementById('penguin-head'),
-            parts?.topJaw || document.getElementById('penguin-top-jaw'),
-            parts?.botJaw || document.getElementById('penguin-bot-jaw')
+            parts?.topJawImg || document.getElementById('penguin-top-jaw')?.querySelector?.('img.penguin-jaw-img') || document.getElementById('penguin-top-jaw'),
+            parts?.botJawImg || document.getElementById('penguin-bot-jaw')?.querySelector?.('img.penguin-jaw-img') || document.getElementById('penguin-bot-jaw')
         ].filter(Boolean);
 
         imgs.forEach((img) => {
@@ -392,6 +405,31 @@ class Renderer {
             return el;
         };
 
+        // SVG слой для повернутых полигонов (зубные коллайдеры)
+        let svg = overlay.querySelector('#debug-svg');
+        if (!svg) {
+            svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+            svg.setAttribute('id', 'debug-svg');
+            svg.style.position = 'absolute';
+            svg.style.inset = '0';
+            svg.style.pointerEvents = 'none';
+            svg.style.zIndex = '1000';
+            overlay.appendChild(svg);
+        }
+
+        const ensurePoly = (id) => {
+            let p = svg.querySelector(`#${id}`);
+            if (!p) {
+                p = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+                p.setAttribute('id', id);
+                p.setAttribute('fill', 'rgba(255,0,0,0.10)');
+                p.setAttribute('stroke', 'rgba(255,0,0,0.95)');
+                p.setAttribute('stroke-width', '2');
+                svg.appendChild(p);
+            }
+            return p;
+        };
+
         // Контейнер для границ всех объектов на ленте
         let objectsContainer = overlay.querySelector('#debug-objects-container');
         if (!objectsContainer) {
@@ -406,9 +444,14 @@ class Renderer {
         this.debugEls = {
             overlay,
             objectsContainer,
+            svg,
+            teethTopPolyEl: ensurePoly('debug-teeth-top-poly'),
+            teethBotPolyEl: ensurePoly('debug-teeth-bot-poly'),
             penguinBox: ensure('debug-penguin-box', 'debug-box debug-penguin'),
             jawTopBox: ensure('debug-jaw-top-box', 'debug-box debug-jaw-top'),
             jawBotBox: ensure('debug-jaw-bot-box', 'debug-box debug-jaw-bot'),
+            teethTopBox: ensure('debug-teeth-top-box', 'debug-box debug-teeth-top'),
+            teethBotBox: ensure('debug-teeth-bot-box', 'debug-box debug-teeth-bot'),
             dangerBox: ensure('debug-danger-box', 'debug-box debug-danger'),
             biteLine: ensure('debug-bite-line', 'debug-line debug-bite'),
             anchorLine: ensure('debug-anchor-line', 'debug-line debug-anchor'),
@@ -457,9 +500,9 @@ class Renderer {
         container.appendChild(box);
     }
 
-    updateDebugOverlay({ containerRect, penguinRect, jawTopRect, jawBotRect, dangerRect, biteX, anchorX }) {
+    updateDebugOverlay({ containerRect, penguinRect, jawTopRect, jawBotRect, teethTopRect, teethBotRect, dangerRect, biteX, anchorX }) {
         if (!this.debug || !this.debugEls) return;
-        const { jawTopBox, jawBotBox, dangerBox, biteLine, penguinBox, anchorLine, jawBottomLine } = this.debugEls;
+        const { jawTopBox, jawBotBox, teethTopBox, teethBotBox, dangerBox, biteLine, penguinBox, anchorLine, jawBottomLine, svg, teethTopPolyEl, teethBotPolyEl } = this.debugEls;
 
         const placeBox = (box, rect) => {
             if (!rect) {
@@ -479,50 +522,8 @@ class Renderer {
             box.style.height = `${height}px`;
         };
         
-        // Для челюстей используем реальные размеры изображений (они уже img элементы)
-        const placeJawBox = (box, jawEl, rect) => {
-            if (!rect || !jawEl) {
-                box.style.display = 'none';
-                return;
-            }
-            
-            // Челюсти уже являются img элементами напрямую
-            let actualWidth = rect.width;
-            let actualHeight = rect.height;
-            
-            // Если это img элемент, используем его реальные пропорции
-            if (jawEl.tagName === 'IMG' && jawEl.naturalWidth > 0 && jawEl.naturalHeight > 0) {
-                // Вычисляем реальные размеры с учетом object-fit: contain
-                // CSS уже масштабирует изображение, сохраняя пропорции
-                const computedStyle = window.getComputedStyle(jawEl);
-                const cssWidth = parseFloat(computedStyle.width);
-                const cssHeight = parseFloat(computedStyle.height);
-                
-                // Используем CSS размеры, которые уже учитывают пропорции
-                // Но нужно учесть, что object-fit: contain может оставлять пустое пространство
-                const aspectRatio = jawEl.naturalWidth / jawEl.naturalHeight;
-                const containerAspectRatio = cssWidth / cssHeight;
-                
-                if (aspectRatio > containerAspectRatio) {
-                    // Изображение ограничено по ширине
-                    actualWidth = cssWidth;
-                    actualHeight = cssWidth / aspectRatio;
-                } else {
-                    // Изображение ограничено по высоте
-                    actualWidth = cssHeight * aspectRatio;
-                    actualHeight = cssHeight;
-                }
-            }
-            
-            box.style.display = 'block';
-            // Центрируем бокс относительно реального изображения
-            const centerX = rect.left + rect.width / 2;
-            const centerY = rect.top + rect.height / 2;
-            box.style.left = `${centerX - actualWidth / 2 - containerRect.left}px`;
-            box.style.top = `${centerY - actualHeight / 2 - containerRect.top}px`;
-            box.style.width = `${actualWidth}px`;
-            box.style.height = `${actualHeight}px`;
-        };
+        // Примечание: debug-боксы показывают AABB (boundingClientRect), т.к. это то,
+        // что реально используется в физике коллизий (и оно учитывает rotate/transform).
 
         const placeLine = (line, x) => {
             if (typeof x !== 'number' || !Number.isFinite(x)) {
@@ -552,16 +553,14 @@ class Renderer {
         if (anchorLine) anchorLine.style.display = 'none';
         if (jawBottomLine) jawBottomLine.style.display = 'none';
         
-        // Показываем только боксы, участвующие в коллизии:
-        // 1. Челюсти (всегда участвуют в коллизии)
-        const parts = this.getPenguinParts();
-        if (parts) {
-            placeJawBox(jawTopBox, parts.topJaw, jawTopRect);
-            placeJawBox(jawBotBox, parts.botJaw, jawBotRect);
-        } else {
+        // 1) Челюсти (для контекста)
         placeBox(jawTopBox, jawTopRect);
         placeBox(jawBotBox, jawBotRect);
-        }
+
+        // 1.1) Зубные коллайдеры: реальные DOM-элементы внутри челюстей.
+        // Они поворачиваются/смещаются синхронно со спрайтом, поэтому для debug показываем их AABB.
+        placeBox(teethTopBox, teethTopRect);
+        placeBox(teethBotBox, teethBotRect);
         
         // 2. Объект в коллизии (если есть)
         placeBox(dangerBox, dangerRect);
@@ -575,6 +574,15 @@ class Renderer {
             const bottomY = (jawBotRect.bottom !== undefined ? jawBotRect.bottom : (jawBotRect.y || 0) + (jawBotRect.height || 0)) - containerRect.top;
             placeHLine(jawBottomLine, bottomY);
         }
+
+        // Старые SVG-полигоны больше не используем
+        try {
+            if (teethTopPolyEl) teethTopPolyEl.style.display = 'none';
+            if (teethBotPolyEl) teethBotPolyEl.style.display = 'none';
+            if (svg) svg.style.display = 'none';
+        } catch (e) {
+            // ignore
+        }
     }
 
     getPenguinParts() {
@@ -583,7 +591,11 @@ class Renderer {
         const head = root.querySelector('#penguin-head') || root.querySelector('.penguin-head');
         const topJaw = root.querySelector('#penguin-top-jaw') || root.querySelector('.penguin-jaw--top');
         const botJaw = root.querySelector('#penguin-bot-jaw') || root.querySelector('.penguin-jaw--bot');
-        return { root, head, topJaw, botJaw };
+        const topJawImg = topJaw?.querySelector?.('img.penguin-jaw-img') || (topJaw?.tagName === 'IMG' ? topJaw : null);
+        const botJawImg = botJaw?.querySelector?.('img.penguin-jaw-img') || (botJaw?.tagName === 'IMG' ? botJaw : null);
+        const topTeeth = topJaw?.querySelector?.('.teeth-collider--top') || null;
+        const botTeeth = botJaw?.querySelector?.('.teeth-collider--bot') || null;
+        return { root, head, topJaw, botJaw, topJawImg, botJawImg, topTeeth, botTeeth };
     }
 
     // Правая граница "рта" = правая граница НИЖНЕЙ челюсти (кончик зубов).
@@ -594,23 +606,10 @@ class Renderer {
         const parts = this.getPenguinParts();
         if (!parts) return 0;
 
-        // Получаем реальные размеры нижней челюсти
-        const botJawImg = parts.botJaw?.querySelector?.('img') || parts.botJaw;
-        const botRect = parts.botJaw?.getBoundingClientRect?.();
-        const rootRect = parts.root?.getBoundingClientRect?.();
-
-        // Используем реальные размеры нижней челюсти, если доступны
-        let right = null;
-        if (botRect) {
-            if (botJawImg && botJawImg.naturalWidth > 0) {
-                const scale = botRect.width / botJawImg.naturalWidth;
-                const actualRight = botRect.left + (botJawImg.naturalWidth * scale);
-                right = actualRight;
-            } else {
-                right = botRect.right;
-            }
-        }
-        if (right == null && rootRect) right = rootRect.right;
+        // Важно: используем boundingClientRect, потому что он учитывает rotate/transform челюсти.
+        const botRect = parts.botJaw?.getBoundingClientRect?.() || null;
+        const rootRect = parts.root?.getBoundingClientRect?.() || null;
+        let right = botRect ? botRect.right : (rootRect ? rootRect.right : null);
         if (right == null) return 0;
 
         return (right - containerRect.left) + (this.biteOffsetX || 0);
@@ -738,8 +737,12 @@ class Renderer {
         const parts = this.getPenguinParts();
         if (!parts?.root) return;
         parts.root.classList.remove('bite-small', 'bite-big');
+        parts.root.classList.remove('mouth-open');
         parts.root.style.removeProperty('--bite-delay-ms');
         parts.root.style.removeProperty('--bite-ms');
+        this._mouthHeld = false;
+        this._mouthHoldStartTimeMs = 0;
+        this._mouthOpen = false;
     }
 
     // Переключение изображений пингвина при проигрыше
@@ -761,19 +764,21 @@ class Renderer {
             head.style.removeProperty('transform');
             head.src = 'img/head-2.svg';
         }
+        const topJawImg = parts?.topJawImg || topJaw?.querySelector?.('img.penguin-jaw-img') || null;
+        const botJawImg = parts?.botJawImg || botJaw?.querySelector?.('img.penguin-jaw-img') || null;
         if (topJaw) {
             topJaw.style.transform = 'none';
             topJaw.style.removeProperty('transform');
-            topJaw.src = 'img/top-jaw-2.svg';
             topJaw.classList.add('game-over');
         }
         if (botJaw) {
             botJaw.style.transform = 'none';
             botJaw.style.removeProperty('transform');
-            botJaw.src = 'img/bot-jaw-2.svg';
             // Добавляем класс для CSS-позиционирования (по вертикали при game over)
             botJaw.classList.add('game-over');
         }
+        if (topJawImg) topJawImg.src = 'img/top-jaw-2.svg';
+        if (botJawImg) botJawImg.src = 'img/bot-jaw-2.svg';
         
         // Анимация вылета зубов при столкновении
         this.animateTeethFlyOut();
@@ -860,6 +865,7 @@ class Renderer {
         if (parts?.root) {
             // Убираем возможное смещение конструкции головы после game over
             parts.root.style.transform = '';
+            parts.root.classList.remove('mouth-open');
         }
 
         const head = document.getElementById('penguin-head');
@@ -871,18 +877,24 @@ class Renderer {
             head.style.removeProperty('transform');
             head.src = 'img/head-1.svg';
         }
+        const topJawImg = parts?.topJawImg || topJaw?.querySelector?.('img.penguin-jaw-img') || null;
+        const botJawImg = parts?.botJawImg || botJaw?.querySelector?.('img.penguin-jaw-img') || null;
         if (topJaw) {
             topJaw.style.transform = 'none';
             topJaw.style.removeProperty('transform');
-            topJaw.src = 'img/top-jaw-1.svg';
             topJaw.classList.remove('game-over');
         }
         if (botJaw) {
             botJaw.style.transform = 'none';
             botJaw.style.removeProperty('transform');
             botJaw.classList.remove('game-over');
-            botJaw.src = 'img/bot-jaw-1.svg';
         }
+        if (topJawImg) topJawImg.src = 'img/top-jaw-1.svg';
+        if (botJawImg) botJawImg.src = 'img/bot-jaw-1.svg';
+
+        this._mouthHeld = false;
+        this._mouthHoldStartTimeMs = 0;
+        this._mouthOpen = false;
     }
 
     // Полный сброс DOM-окна ленты (нужно при старте новой игры, чтобы current=0 центрировался сразу)
@@ -904,9 +916,17 @@ class Renderer {
         this._beltPosition = 0;
         this._lastBeltUpdateTime = 0;
         this._beltStartAdjusted = false;
+        this._beltEatMultiplier = 1.0;
+        this._foodsEatenForSpeed = 0;
+        this._mouthHeld = false;
+        this._mouthHoldStartTimeMs = 0;
         this._mouthOpen = false;
-        this._mouthCharges = 0;
-        this._biteBoostRemainingExtraPx = 0;
+        try {
+            const parts = this.getPenguinParts();
+            parts?.root?.classList?.remove?.('mouth-open');
+        } catch (e) {
+            // ignore
+        }
         this._lastAutoBiteTime = 0;
         
         // Переинициализация облаков
@@ -1050,6 +1070,13 @@ class Renderer {
         });
         
         // SHIFT/перемотки больше нет: осталась только кнопка "проглотить" (openMouth).
+
+        // Ускоряем ленту за каждую съеденную еду
+        eventBus.on('FOOD_EATEN', () => {
+            this._foodsEatenForSpeed = (this._foodsEatenForSpeed || 0) + 1;
+            const g = Number.isFinite(this._beltEatGrowth) ? this._beltEatGrowth : 1.03;
+            this._beltEatMultiplier = (Number.isFinite(this._beltEatMultiplier) ? this._beltEatMultiplier : 1) * g;
+        });
         
         // Остановка анимаций при паузе
         eventBus.on('PAUSE', () => {
@@ -1098,44 +1125,22 @@ class Renderer {
         const deltaTime = nowMs - this._lastBeltUpdateTime;
         this._lastBeltUpdateTime = nowMs;
 
-        // Обновляем позицию ленты (постоянное движение с учётом ускорения таймера)
-        const speedMultiplier = (timer && typeof timer.getSpeedMultiplier === 'function')
-            ? timer.getSpeedMultiplier()
-            : 1;
-        const baseSpeed = this._beltSpeed * (Number.isFinite(speedMultiplier) ? speedMultiplier : 1);
-        this._lastBaseSpeedPxPerMs = baseSpeed;
-
-        // Distance-based bite impulse: даём фиксированную ДОП. дистанцию (extraPx) за время ускорения.
-        // Пока remainingExtraPx > 0 лента едет быстрее, но мы "списываем" только extra часть (а не всю).
-        let appliedDeltaPx = baseSpeed * deltaTime;
-        const m = Number.isFinite(this._biteBoostMultiplier) ? this._biteBoostMultiplier : 5;
-        if ((this._biteBoostRemainingExtraPx || 0) > 0) {
-            // Чтобы анимация челюстей была строго синхронна с ускорением,
-            // "скорость сгорания" extra дистанции считаем из зафиксированной базовой скорости при нажатии.
-            const baseForImpulse = (this._biteBoostBaseSpeedPxPerMs && this._biteBoostBaseSpeedPxPerMs > 0)
-                ? this._biteBoostBaseSpeedPxPerMs
-                : baseSpeed;
-
-            const extraRatePxPerMs = Math.max(0, baseForImpulse * (m - 1)); // сколько "extra" добавляем в ms
-            const extraDeltaPx = extraRatePxPerMs * deltaTime;
-            const remaining = this._biteBoostRemainingExtraPx || 0;
-
-            if (extraDeltaPx > 0) {
-                const usedExtra = Math.min(remaining, extraDeltaPx);
-                appliedDeltaPx = appliedDeltaPx + usedExtra;
-                this._biteBoostRemainingExtraPx = remaining - usedExtra;
+        // Автозакрытие рта при удержании > max
+        if (this._mouthHeld && this._mouthHoldStartTimeMs) {
+            const maxMs = Number.isFinite(this._mouthHoldMaxMs) ? this._mouthHoldMaxMs : 2000;
+            if ((nowMs - this._mouthHoldStartTimeMs) >= maxMs) {
+                this.endBiteHold();
             }
         }
 
-        this._beltPosition += appliedDeltaPx;
-
-        // Рот активен только пока идёт импульс и есть заряд на проглатывание.
-        this._mouthOpen = (this._mouthCharges > 0) && ((this._biteBoostRemainingExtraPx || 0) > 0);
-        // Когда импульс закончился — charge сгорает (нажатие было "впустую").
-        if ((this._biteBoostRemainingExtraPx || 0) <= 0 && (this._mouthCharges || 0) > 0) {
-            this._mouthCharges = 0;
-            this._mouthOpen = false;
-        }
+        // Обновляем позицию ленты (постоянное движение)
+        const speedMultiplier = (timer && typeof timer.getSpeedMultiplier === 'function')
+            ? timer.getSpeedMultiplier()
+            : 1;
+        const eatMult = Number.isFinite(this._beltEatMultiplier) ? this._beltEatMultiplier : 1;
+        const baseSpeed = this._beltSpeed * (Number.isFinite(speedMultiplier) ? speedMultiplier : 1) * eatMult;
+        this._lastBaseSpeedPxPerMs = baseSpeed;
+        this._beltPosition += (baseSpeed * deltaTime);
 
         // Пересчитываем метрики если нужно
         this.recomputeStripMetrics();
@@ -1181,61 +1186,22 @@ class Renderer {
 
         if (!jawTopRect || !jawBotRect) return;
 
-        // Вычисляем реальные размеры челюстей (с учетом пропорций изображений)
-        const getJawActualBounds = (jawEl, rect) => {
-            if (!jawEl || !rect) return null;
-            
-            let actualWidth = rect.width;
-            let actualHeight = rect.height;
-            let actualLeft = rect.left;
-            let actualTop = rect.top;
-            
-            // Если это img элемент, используем его реальные пропорции
-            if (jawEl.tagName === 'IMG' && jawEl.naturalWidth > 0 && jawEl.naturalHeight > 0) {
-                const computedStyle = window.getComputedStyle(jawEl);
-                const cssWidth = parseFloat(computedStyle.width);
-                const cssHeight = parseFloat(computedStyle.height);
-                const aspectRatio = jawEl.naturalWidth / jawEl.naturalHeight;
-                const containerAspectRatio = cssWidth / cssHeight;
-                
-                if (aspectRatio > containerAspectRatio) {
-                    actualWidth = cssWidth;
-                    actualHeight = cssWidth / aspectRatio;
-                } else {
-                    actualWidth = cssHeight * aspectRatio;
-                    actualHeight = cssHeight;
-                }
-                
-                // Центрируем относительно контейнера
-                const centerX = rect.left + rect.width / 2;
-                const centerY = rect.top + rect.height / 2;
-                actualLeft = centerX - actualWidth / 2;
-                actualTop = centerY - actualHeight / 2;
-            }
-            
-            return {
-                left: actualLeft,
-                right: actualLeft + actualWidth,
-                top: actualTop,
-                bottom: actualTop + actualHeight,
-                width: actualWidth,
-                height: actualHeight
-            };
-        };
-        
-        const topJawBounds = getJawActualBounds(parts.topJaw, jawTopRect);
-        const botJawBounds = getJawActualBounds(parts.botJaw, jawBotRect);
-        
-        if (!topJawBounds || !botJawBounds) return;
+        // Границы "рта" берем из реальных DOMRect (они учитывают rotate/transform).
+        // jawRight лучше брать из правого края нижней челюсти (с учётом rotate).
+        // Даже если AABB чуть меняется, для "проглочен внутрь" этого достаточно.
+        const jawRight = (jawBotRect.right - containerRect.left) + (this.biteOffsetX || 0);
+        const jawTop = Math.min(jawTopRect.top, jawBotRect.top) - containerRect.top;
+        const jawBottom = Math.max(jawTopRect.bottom, jawBotRect.bottom) - containerRect.top;
 
-        // Правая граница для триггера поедания/проигрыша берётся ТОЛЬКО от нижней челюсти.
-        // Так bite-line и коллизия привязаны к фактическому кончику нижних зубов.
-        const jawRight = botJawBounds.right - containerRect.left;
-        // Для вертикальных границ и левой стороны всё ещё учитываем обе челюсти,
-        // чтобы зона "рта" была цельной.
-        const jawLeft = Math.min(topJawBounds.left, botJawBounds.left) - containerRect.left;
-        const jawTop = Math.min(topJawBounds.top, botJawBounds.top) - containerRect.top;
-        const jawBottom = Math.max(topJawBounds.bottom, botJawBounds.bottom) - containerRect.top;
+        const rectsOverlap = (a, b) => {
+            if (!a || !b) return false;
+            return (a.left < b.right) && (a.right > b.left) && (a.top < b.bottom) && (a.bottom > b.top);
+        };
+
+        // Teeth colliders: реальные DOM-элементы в составе челюстей.
+        // Они двигаются/вращаются вместе со спрайтом и с transition, поэтому не "уезжают".
+        const teethTopRectPage = parts.topTeeth?.getBoundingClientRect?.() || null;
+        const teethBotRectPage = parts.botTeeth?.getBoundingClientRect?.() || null;
 
         // Находим все видимые объекты на ленте
         const circles = Array.from(this.numberStrip.querySelectorAll('.number-circle:not(.passed)'));
@@ -1269,23 +1235,21 @@ class Renderer {
                 nearestCircle = circle;
             }
 
-            // Проверяем коллизию: объект касается правой границы челюсти.
-            // Горизонтально считаем коллизией момент, когда правая граница объекта пересекает правую границу челюсти.
-            // Вертикально — когда есть пересечение по высоте.
+            const foodRectPage = imgRect || circleRect;
+
+            // Условия для "поедания" (рот открыт и еда прошла внутрь пасти по X, оставаясь в вертикали рта)
             const overlapsMouthVert = (imgBottom >= jawTop) && (imgTop <= jawBottom);
-            // "касание линии" (контакт) — объект пересёк вертикальную линию правой границы нижней челюсти
-            // (объект "наезжает" на пасть справа налево).
-            const touchesJawLine = overlapsMouthVert && (imgRight >= jawRight) && (imgLeft <= jawRight);
-            // "полностью проглочен" — весь объект прошёл ЛЕВЕЕ линии (внутрь пасти),
-            // то есть его ПРАВЫЙ край ушёл левее jawRight.
             const fullyPastJawLine = overlapsMouthVert && (imgRight <= jawRight);
-            const canEatNow = !!this._mouthOpen && (this._mouthCharges > 0);
-            const shouldDieNow = (touchesJawLine || fullyPastJawLine) && !canEatNow;
+            const canEatNow = !!this._mouthOpen;
+
+            // Game over: только если коллайдер еды пересёкся с коллайдером ЗУБОВ.
+            const teethCollision =
+                rectsOverlap(foodRectPage, teethTopRectPage) ||
+                rectsOverlap(foodRectPage, teethBotRectPage);
             
             // В debug режиме: помечаем объекты, которые триггерят game over
-            // (любой объект в коллизии при закрытом рте).
             if (this.debug) {
-                if (shouldDieNow) {
+                if (teethCollision) {
                     circle.classList.add('game-over-trigger');
                 } else {
                     // Убираем класс если объект больше не триггерит game over
@@ -1293,22 +1257,13 @@ class Renderer {
                 }
             }
 
-            if (touchesJawLine || fullyPastJawLine) {
+            if (teethCollision) {
                 collidingCircle = circle;
                 const value = parseInt(circle.dataset.value) || 0;
 
                 // Обновляем debug overlay - показываем только объект в коллизии
                 if (this.debug) {
-                    const dangerRect = imgRect
-                        ? {
-                            left: imgRect.left,
-                            top: imgRect.top,
-                            right: imgRect.right,
-                            bottom: imgRect.bottom,
-                            width: imgRect.width,
-                            height: imgRect.height
-                        }
-                        : circleRect;
+                    const dangerRect = foodRectPage;
                     
                     this.updateDebugObjectBoxes(circle, containerRect);
                     this.updateDebugOverlay({
@@ -1316,61 +1271,45 @@ class Renderer {
                         penguinRect: null, // Не показываем
                         jawTopRect,
                         jawBotRect,
+                        teethTopRect: teethTopRectPage,
+                        teethBotRect: teethBotRectPage,
                         dangerRect,
                         biteX: jawRight,
                         anchorX: null // Не показываем
                     });
                 }
 
+                // Проигрыш при физической коллизии зубов и еды.
+                if (!this._deathTriggered) {
+                    this._deathTriggered = true;
+                    this.dbgLog('death', {
+                        value,
+                        mouthOpen: this._mouthOpen,
+                        kind: 'TEETH_COLLISION'
+                    }, 0);
+                    if (typeof eventBus !== 'undefined' && eventBus?.emit) {
+                        eventBus.emit('PENGUIN_COLLISION', {
+                            reason: 'TEETH_COLLISION',
+                            value
+                        });
+                    }
+                }
+                circle.dataset.processed = 'true';
+                return;
+            }
+
+            // Успешное проглатывание: еда целиком прошла внутрь пасти, пока рот открыт.
+            if (fullyPastJawLine && canEatNow) {
+                const value = parseInt(circle.dataset.value) || 0;
                 const mouthTargetX = jawRight - 20;
                 const mouthTargetY = (jawTop + jawBottom) / 2;
-
-                // Новая механика:
-                // - Любой объект (малый или большой), который касается челюсти при ЗАКРЫТОМ рте, даёт game over.
-                // - Любой объект при ОТКРЫТОМ рте съедается (одна и та же анимация укуса).
-                if (shouldDieNow) {
-                    // Проигрыш при коллизии/пересечении линии челюсти при закрытом рте.
-                    if (!this._deathTriggered) {
-                        this._deathTriggered = true;
-                        this.dbgLog('death', {
-                            value,
-                            jawRight,
-                            jawTop,
-                            jawBottom,
-                            imgRight,
-                            imgLeft,
-                            imgTop,
-                            imgBottom,
-                            mouthOpen: this._mouthOpen,
-                            charges: this._mouthCharges,
-                            kind: touchesJawLine ? 'TOUCH' : 'PAST'
-                        }, 0);
-                        if (typeof eventBus !== 'undefined' && eventBus?.emit) {
-                            eventBus.emit('PENGUIN_COLLISION', {
-                                reason: touchesJawLine ? 'COLLISION_TOUCH' : 'COLLISION_PAST',
-                                value
-                            });
-                        }
-                    }
-                    circle.dataset.processed = 'true';
-                    return;
+                circle.dataset.processed = 'true';
+                this.animateEatIntoMouth(circle, container, containerRect, mouthTargetX, mouthTargetY);
+                this.dbgLog('eat', { value }, 120);
+                if (typeof eventBus !== 'undefined' && eventBus?.emit) {
+                    eventBus.emit('FOOD_EATEN', { value });
                 }
-
-                // Успешное проглатывание: только когда весь объект прошёл правее линии челюсти
-                // и только при активном импульсе (нажатии).
-                if (fullyPastJawLine && canEatNow) {
-                    // ВАЖНО: не запускаем второй раз анимацию укуса здесь.
-                    // Укус визуально проигрывается при нажатии кнопки.
-                    this._mouthCharges = Math.max(0, (this._mouthCharges || 0) - 1);
-                    this._mouthOpen = false;
-                    circle.dataset.processed = 'true';
-                    this.animateEatIntoMouth(circle, container, containerRect, mouthTargetX, mouthTargetY);
-                    this.dbgLog('eat', { value }, 120);
-                    if (typeof eventBus !== 'undefined' && eventBus?.emit) {
-                        eventBus.emit('FOOD_EATEN', { value });
-                    }
-                    return;
-                }
+                return;
             }
         }
 
@@ -1404,6 +1343,8 @@ class Renderer {
                 penguinRect: null,
                 jawTopRect,
                 jawBotRect,
+                teethTopRect: teethTopRectPage,
+                teethBotRect: teethBotRectPage,
                 dangerRect: null,
                 biteX: jawRight,
                 anchorX: null
@@ -1411,35 +1352,47 @@ class Renderer {
         }
     }
 
-    // Открытие рта (окно, когда объект можно проглотить)
-    openMouth(durationMs = 500) {
-        // Блокировка: нельзя открыть рот, если уже идёт анимация укуса или активен импульс.
-        // Это предотвращает "спам-нажатия", которые делают игру слишком простой.
+    // ===== Mouth hold (press & hold) =====
+    // Press: opening animation 100ms (linear via CSS). While held, mouth stays open.
+    // Release: closing animation 100ms (linear via CSS).
+    // Auto close: after 2s max hold (handled in updateConveyor).
+    setMouthHeld(held) {
         const parts = this.getPenguinParts();
-        const isBiteAnimating = parts?.root?.classList?.contains('bite-small');
-        const hasActiveImpulse = (this._biteBoostRemainingExtraPx || 0) > 0 || (this._mouthCharges || 0) > 0;
-        
-        if (isBiteAnimating || hasActiveImpulse) {
-            return; // Игнорируем повторное нажатие во время анимации/импульса
-        }
-        
-        // durationMs больше не используется: окно укуса задаётся ДИСТАНЦИЕЙ импульса.
-        const extraPx = this.getBiteExtraDistancePx();
-        this._biteBoostRemainingExtraPx = extraPx;
-        // фиксируем базовую скорость на момент нажатия (для синхронизации длительности)
-        this._biteBoostBaseSpeedPxPerMs = (this._lastBaseSpeedPxPerMs && this._lastBaseSpeedPxPerMs > 0)
-            ? this._lastBaseSpeedPxPerMs
-            : this._beltSpeed;
-        this._mouthCharges = 1;
-        this._mouthOpen = true;
-        // Длительность анимации = длительность "сгорания" extra дистанции:
-        // extraRate = base*(m-1), time = extraPx / extraRate.
-        const m = Number.isFinite(this._biteBoostMultiplier) ? this._biteBoostMultiplier : 5;
-        const extraRate = Math.max(0.001, this._biteBoostBaseSpeedPxPerMs * (m - 1));
-        const biteMs = Math.max(60, Math.min(450, Math.round(extraPx / extraRate)));
+        if (!parts?.root) return;
 
-        this.triggerBite('small', biteMs / 1000);
-        this.dbgLog('mouth', { open: true, extraPx: this._biteBoostRemainingExtraPx, biteMs }, 150);
+        const nextHeld = !!held;
+        if (nextHeld === !!this._mouthHeld) return;
+
+        this._mouthHeld = nextHeld;
+        const nowMs = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+
+        if (nextHeld) {
+            this._mouthHoldStartTimeMs = nowMs;
+            this._mouthOpen = true;
+            // stop any legacy bite animations and switch to held-open state
+            parts.root.classList.remove('bite-small', 'bite-big');
+            parts.root.classList.add('mouth-open');
+        } else {
+            this._mouthOpen = false;
+            parts.root.classList.remove('mouth-open');
+        }
+    }
+
+    startBiteHold() {
+        this.setMouthHeld(true);
+    }
+
+    endBiteHold() {
+        this.setMouthHeld(false);
+    }
+
+    // Legacy API: "tap to open" (kept for compatibility, but hold-input should call start/end).
+    openMouth(durationMs = 500) {
+        this.startBiteHold();
+        const ms = Math.max(0, Math.min(this._mouthHoldMaxMs || 2000, Math.round(Number(durationMs) || 0)));
+        if (ms > 0) {
+            window.setTimeout(() => this.endBiteHold(), ms);
+        }
     }
     
     setupFocusZoneAnimation() {

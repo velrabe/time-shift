@@ -11,7 +11,7 @@
 
     /* Penguin sizing (used for ice scaling too) */
     --penguin-w: min(360px, 62vw);
-    --penguin-h: calc(var(--penguin-w) * (251 / 410)); /* head.svg viewBox: 410x251 */
+    --penguin-h: calc(var(--penguin-w) * (251 / 410)); /* legacy visual height baseline */
 }
 
 body {
@@ -383,30 +383,6 @@ body {
     position: relative;
 }
 
-.perk-btn.disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-}
-
-.perk-btn.charged {
-    background: rgba(0, 0, 0, 0.06);
-    border-color: rgba(0, 0, 0, 0.75);
-}
-
-.perk-btn.active {
-    background: rgba(0, 0, 0, 0.08);
-    border-color: rgba(0, 0, 0, 0.85);
-}
-
-.perk-progress {
-    position: absolute;
-    bottom: 0;
-    left: 0;
-    height: 2px;
-    background: #101010;
-    transition: width 0.3s;
-}
-
 /* Game Area */
 #game-area {
     flex: 1;
@@ -525,31 +501,11 @@ body {
     background: rgba(0, 200, 120, 0.05);
 }
 
-.debug-box.debug-jaw-bot {
-    border-color: rgba(200, 0, 255, 0.95);
-    background: rgba(200, 0, 255, 0.05);
-}
-
-.debug-box.debug-teeth-top {
-    border-color: rgba(255, 0, 0, 0.95);
-    background: rgba(255, 0, 0, 0.08);
-}
-
-.debug-box.debug-teeth-bot {
-    border-color: rgba(255, 80, 0, 0.95);
-    background: rgba(255, 80, 0, 0.07);
-}
-
 .debug-line {
     position: absolute;
     width: 0;
     border-left: 2px solid rgba(255, 0, 0, 0.95);
     top: 0;
-}
-
-.debug-line.debug-anchor {
-    border-left-color: rgba(0, 0, 0, 0.55);
-    border-left-style: dashed;
 }
 
 /* Горизонтальная линия по нижней границе нижней челюсти */
@@ -612,12 +568,6 @@ body {
     filter: none !important;
 }
 
-/* Важно: никаких "×2" для danger — размер задаётся ассетом (-b) и глобальным масштабом */
-
-.number-circle.debug-number .debug-label {
-    color: inherit;
-}
-
 /* Красные цифры для объектов, которые триггерят game over */
 .number-circle.game-over-trigger .debug-label {
     color: #ff0000 !important;
@@ -646,11 +596,6 @@ body {
     opacity: 1;
 }
 
-.number-circle.danger {
-    opacity: 1;
-    transform: none;
-}
-
 .number-circle.passed {
     opacity: 0.55;
 }
@@ -671,8 +616,10 @@ body {
     position: absolute;
     width: 200px;
     height: 200px;
-    /* Сдвигаем всю конструкцию головы и челюстей ещё левее */
-    left: 0px;
+    /* Базовая посадка: пингвин чуть "вылезает" из-за левого края экрана.
+       Это оставляет запас, чтобы при bite-сдвиге вправо форма головы
+       выглядела как появляющаяся из-за края, а не как внезапно "обрезанная". */
+    left: -26px;
     top: 50%;
     /* Lift penguin relative to the lane by 1/4 circle height */
     transform: translateY(-50%) translateY(calc(var(--lane-shift-y) * -1));
@@ -681,6 +628,7 @@ body {
     justify-content: flex-start;
     z-index: 20; /* above ice + strip */
     pointer-events: none;
+    overflow: visible;
     transform-origin: center center;
 }
 
@@ -708,14 +656,14 @@ body {
 
 .focus-penguin {
     position: absolute;
-    /* Keep the same aspect ratio as head.svg to avoid letterboxing on mobile */
-    width: var(--penguin-w);
-    aspect-ratio: 410 / 251; /* head.svg viewBox */
+    /* Новый head длиннее: держим прежний визуальный размер через поправку ширины. */
+    width: calc(var(--penguin-w) * 1.18);
     height: auto;
+    aspect-ratio: 378 / 196; /* new head-1.svg viewBox */
     transform-origin: center center;
     will-change: transform;
     z-index: 10;
-    left: 0;
+    left: -22px;
 }
 
 /* Penguin composite (head + jaws) */
@@ -766,56 +714,35 @@ body {
     background: rgba(255, 0, 0, 0.10);
 }
 
-.teeth-collider--top { bottom: 0; }
-.teeth-collider--bot { top: 0; }
-
-.penguin.debug-colliders .teeth-collider {
-    opacity: 1;
-}
+.teeth-collider--top { bottom: 0; display: none; } /* один коллайдер — только SVG-полигон в overlay */
+.teeth-collider--bot { top: 0; display: none; }
 
 /* Head fills the whole container */
 .penguin-head {
     z-index: 1;
 }
 
-/* Jaw pieces are smaller and positioned in the head coordinate space.
-   Defaults are derived from the original head viewBox (410x251) and jaw viewBoxes.
-   Adjust these CSS vars to calibrate composition. */
+/* Jaw rig in normalized head space (all values are % of current head box).
+   This keeps the whole construction stable and independent from raw SVG canvas sizes. */
 .penguin {
-    /* Соотношения размеров челюстей к голове, основанные на оригинальных SVG:
-       head: 410x251
-       top jaw (normal): 272.82x86.44  → ~66.6% ширины, ~34.4% высоты
-       top jaw (game over): 161.36x93.32 (сама картинка уже уже, но контейнер остаётся тем же) */
-    --jaw-top-w: 66.6%;
-    --jaw-top-h: 34.4%;
-    /* Для нижней челюсти применяем те же пропорции, чтобы она оставалась сопоставимой по размеру с верхней */
-    --jaw-bot-w: 63.8%;
-    --jaw-bot-h: 33.6%;
-    /* Позиции челюстей относительно головы (чуть левее и ниже) */
-    --jaw-top-x: 47%;
-    --jaw-top-y: 23.5%;
-    --jaw-bot-x: 45%; /* ещё левее */
-    --jaw-bot-y: 39%;
+    /* Размеры из твоих замеров:
+       head ~378.32x193.88, top-jaw ~272.82x86.43, bot-jaw ~248.43x100.72 */
+    --jaw-top-w: 72.1%;
+    --jaw-top-h: 44.6%;
+    --jaw-bot-w: 65.7%;
+    --jaw-bot-h: 52.0%;
+    /* Базовые позиции в той же нормализованной системе (дальше тюним только эти 4 переменные) */
+    --jaw-top-x: 52.2%;
+    --jaw-top-y: 22.2%;
+    --jaw-bot-x: 52.2%;
+    --jaw-bot-y: 41.8%;
 }
 
 .penguin-jaw {
-    z-index: 3; /* передняя пара челюстей поверх back-jaw */
+    z-index: 3; /* передняя пара челюстей поверх головы */
     width: 100%;
     height: 100%;
     object-fit: contain;
-}
-
-/* Фоновая "back-jaw" под передними челюстями */
-.penguin-jaw--back {
-    left: calc(var(--jaw-top-x) / 2); /* левый край совпадает с верхней челюстью */
-    /* по вертикали выравниваем по центру между верхней и нижней челюстью */
-    top: calc((var(--jaw-top-y) + var(--jaw-bot-y)) / 1.5);
-    width: var(--jaw-top-w);
-    height: calc((var(--jaw-top-h) + var(--jaw-bot-h)) * 0.3);
-    right: auto;
-    bottom: auto;
-    transform-origin: 0% 50%;
-    z-index: 0; /* между головой и передними челюстями */
 }
 
 .penguin-jaw--top {
@@ -851,56 +778,20 @@ body {
     transform: scaleX(0.9);
 }
 
-/* Bite animations (single type). Trigger by toggling class .bite-small on #penguin-root */
-@keyframes penguinJawTopSmall {
-    0%   { transform: translateX(0px) translateY(0px) rotate(0deg); }
-    35%  { transform: translateX(4px) translateY(-3px) rotate(-16deg); }
-    100% { transform: translateX(0px) translateY(0px) rotate(0deg); }
-}
-@keyframes penguinJawBotSmall {
-    0%   { transform: translateX(0px) translateY(0px) rotate(0deg); }
-    35%  { transform: translateX(4px) translateY(3px) rotate(12deg); }
-    100% { transform: translateX(0px) translateY(0px) rotate(0deg); }
-}
-@keyframes penguinBackJawSmall {
-    0%   { transform: translateX(0px) translateY(0px) scale(1); }
-    35%  { transform: translateX(-20px) translateY(0px) scale(1.6); }
-    100% { transform: translateX(0px) translateY(0px) scale(1); }
-}
-
-/* Head stretch during bite (height +10%) */
-@keyframes penguinHeadStretchSmall {
-    0% { transform: scaleY(1); }
-    35% { transform: scaleY(1.1); }
-    100% { transform: scaleY(1); }
-}
-
-/* Head nudge during bite — вся конструкция головы/челюстей слегка сдвигается вправо */
-@keyframes penguinNudgeSmall {
-    0%   { transform: translateX(0px); }
-    35%  { transform: translateX(8px); }
-    100% { transform: translateX(0px); }
-}
-
 .penguin {
-    /* Голова статична, без смещения */
-    --bite-lunge-big: 40px;
-    --bite-lunge-small: calc(var(--bite-lunge-big) * 0.2);
-    transform: translateX(0px);
+    --penguin-open-shift-x: 8px;
+    /* Компенсация "визуально стоящего" кончика зубов из-за ротации челюстей */
+    --jaw-top-open-extra-x: 14px;
+    --jaw-bot-open-extra-x: 9px;
+    /* Небольшой дополнительный X-сдвиг челюстей при открытии/повороте */
+    --jaw-open-rot-shift-x: 1px;
+    /* Калибровка зубного коллайдера (верхние зубы): закрытый/открытый рот */
+    --teeth-top-offset-x: -30px;
+    --teeth-top-offset-y: 0px;
+    --teeth-top-open-offset-x: -36px;
+    --teeth-top-open-offset-y: -8px;
+    transform: none;
     will-change: transform;
-}
-
-.penguin.bite-small .penguin-jaw--top { animation: penguinJawTopSmall var(--bite-ms, 140ms) ease-in-out var(--bite-delay-ms, 0ms); }
-.penguin.bite-small .penguin-jaw--bot { animation: penguinJawBotSmall var(--bite-ms, 140ms) ease-in-out var(--bite-delay-ms, 0ms); }
-.penguin.bite-small .penguin-jaw--back { animation: penguinBackJawSmall var(--bite-ms, 140ms) ease-in-out var(--bite-delay-ms, 0ms); }
-
-.penguin.bite-small { animation: penguinNudgeSmall var(--bite-ms, 140ms) ease-in-out var(--bite-delay-ms, 0ms); }
-
-/* Head height pulse during bite */
-.penguin.bite-small #penguin-head,
-.penguin.bite-small .penguin-head {
-    transform-origin: 50% 50%;
-    animation: penguinHeadStretchSmall var(--bite-ms, 140ms) ease-in-out var(--bite-delay-ms, 0ms);
 }
 
 /* ===== Mouth hold (press & hold) =====
@@ -912,33 +803,10 @@ body {
 .penguin,
 .penguin .penguin-jaw--top,
 .penguin .penguin-jaw--bot,
-.penguin .penguin-jaw--back,
 .penguin #penguin-head,
 .penguin .penguin-head {
     transition: transform 100ms linear;
     will-change: transform;
-}
-
-.penguin.mouth-open .penguin-jaw--top {
-    transform: translateX(4px) translateY(-3px) rotate(-16deg);
-}
-
-.penguin.mouth-open .penguin-jaw--bot {
-    transform: translateX(4px) translateY(3px) rotate(12deg);
-}
-
-.penguin.mouth-open .penguin-jaw--back {
-    transform: translateX(-20px) translateY(0px) scale(1.6);
-}
-
-.penguin.mouth-open {
-    transform: translateX(8px);
-}
-
-.penguin.mouth-open #penguin-head,
-.penguin.mouth-open .penguin-head {
-    transform-origin: 50% 50%;
-    transform: scaleY(1.1);
 }
 
 
@@ -973,19 +841,13 @@ body {
     height: 86px;
 }
 
-.control-btn.inactive {
-    opacity: 0.3;
-    cursor: not-allowed;
-    pointer-events: none;
-}
-
 .control-btn:disabled {
     opacity: 0.3;
     cursor: not-allowed;
 }
 
 .control-btn:disabled:hover {
-    transform: translateY(0) scale(var(--cd-scale, 1));
+    transform: translateY(0);
     background: rgba(255, 255, 255, 0.15);
 }
 
@@ -1055,14 +917,13 @@ body {
         0 0 40px rgba(255, 180, 77, 0.75),
         inset 0 1px 0 rgba(255, 255, 255, 0.3),
         inset 0 -1px 0 rgba(60, 80, 120, 0.08);
-    /* action cooldown feedback (set via JS as CSS vars) */
-    opacity: var(--cd-opacity, 1);
-    transform: translateY(0) scale(var(--cd-scale, 1));
+    opacity: 1;
+    transform: translateY(0);
 }
 
 .control-btn:hover {
     filter: brightness(1.08);
-    transform: translateY(-2px) scale(var(--cd-scale, 1));
+    transform: translateY(-2px);
     background: linear-gradient(180deg, #ffc266 0%, #ff9d55 100%);
     box-shadow:
         0 26px 48px rgba(80, 40, 10, 0.4),
@@ -1072,37 +933,13 @@ body {
 }
 
 .control-btn:active {
-    transform: translateY(0) scale(var(--cd-scale, 1));
+    transform: translateY(0);
     background: linear-gradient(180deg, #ff9f50 0%, #ff7a35 100%);
     box-shadow:
         0 6px 20px rgba(60, 40, 20, 0.35),
         0 0 28px rgba(255, 160, 60, 0.9),
         inset 0 1px 0 rgba(255, 255, 255, 0.2),
         inset 0 -1px 0 rgba(60, 80, 120, 0.1);
-}
-
-.control-btn.solution {
-    background: linear-gradient(180deg, #8dff6a 0%, #35d04a 100%);
-    border-color: rgba(255, 255, 255, 0.75);
-    color: rgba(0, 0, 0, 0.85);
-}
-
-.control-btn.trap {
-    background: linear-gradient(180deg, #ff6a6a 0%, #d03737 100%);
-    border-color: rgba(255, 255, 255, 0.75);
-    color: rgba(255, 255, 255, 0.92);
-}
-
-.control-btn.neutral {
-    background: linear-gradient(180deg, #dfe9ff 0%, #b9ccff 100%);
-    border-color: rgba(255, 255, 255, 0.75);
-}
-
-/* Neutral не должен применяться к bite-btn */
-.control-btn.bite-btn.neutral,
-#bite-btn.control-btn.neutral {
-    background: linear-gradient(180deg, #ffb84d 0%, #ff8c42 100%) !important;
-    border: none !important;
 }
 
 /* Явно задаем оранжевый цвет для кнопки BITE */

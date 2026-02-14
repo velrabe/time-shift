@@ -2,7 +2,6 @@
 class Game {
     constructor() {
         this.timer = new Timer();
-        this.director = null;
         this.perks = new PerkSystem();
         this.audio = new AudioSystem();
         this.storage = new StorageSystem();
@@ -30,11 +29,6 @@ class Game {
         
         this.animationFrameId = null;
         this.lastUpdateTime = 0;
-
-        // Ограничение частоты действий игрока (иначе можно "заморозить" авто-тик и всегда выигрывать хоткеями)
-        this.nextActionAllowedAtMs = 0;
-        this.lastActionAtMs = 0;
-        this.lastActionCooldownMs = 0;
 
         // Отложенная смерть (для анимации столкновения)
         this.deathInProgress = false;
@@ -118,12 +112,7 @@ class Game {
             }
         });
 
-        // Новая кнопка открытия рта
-        eventBus.on('MOUTH_BUTTON_CLICKED', () => {
-            if (this.state === 'RUNNING' && this.renderer) {
-                this.renderer.openMouth(500); // Открываем рот на 500мс
-            }
-        });
+        // Mouth hold управляется напрямую из input (pointer/key down/up)
         
         // Делаем экземпляр игры доступным глобально для обработчиков
         window.gameInstance = this;
@@ -185,10 +174,16 @@ class Game {
                 // Не даём автоповтору клавиши превращать укус в "авто-режим"
                 if (e.repeat) return;
                 e.preventDefault();
-                // Кнопка открытия рта
-                if (this.renderer) {
-                    this.renderer.openMouth(500);
-                }
+                // Удержание: открылся рот (дальше закроется по keyup или автозакрытию через 2s)
+                this.renderer?.startBiteHold?.();
+            }
+        });
+
+        document.addEventListener('keyup', (e) => {
+            const key = e.key;
+            if (key === ' ' || key === 'Spacebar') {
+                e.preventDefault();
+                this.renderer?.endBiteHold?.();
             }
         });
 
@@ -231,15 +226,42 @@ class Game {
 
         const biteBtn = document.getElementById('bite-btn');
         if (biteBtn) {
-            const onBiteClick = (e) => {
-                e.preventDefault();
+            let holding = false;
+            let holdPointerId = null;
+
+            const startHold = (e) => {
+                e?.preventDefault?.();
                 if (this.state !== 'RUNNING') return;
-                if (this.renderer && typeof this.renderer.openMouth === 'function') {
-                    this.renderer.openMouth(500);
+                if (holding) return;
+                holding = true;
+                holdPointerId = (e && Number.isFinite(e.pointerId)) ? e.pointerId : null;
+                if (holdPointerId != null && typeof biteBtn.setPointerCapture === 'function') {
+                    try { biteBtn.setPointerCapture(holdPointerId); } catch (_err) { /* ignore */ }
                 }
+                this.renderer?.startBiteHold?.();
             };
-            biteBtn.addEventListener('click', onBiteClick);
-            biteBtn.addEventListener('touchstart', onBiteClick);
+
+            const endHold = (e) => {
+                if (!holding) return;
+                const eventPointerId = (e && Number.isFinite(e.pointerId)) ? e.pointerId : null;
+                if (holdPointerId != null && eventPointerId != null && eventPointerId !== holdPointerId) {
+                    return;
+                }
+                e?.preventDefault?.();
+                holding = false;
+                if (holdPointerId != null && typeof biteBtn.releasePointerCapture === 'function') {
+                    try { biteBtn.releasePointerCapture(holdPointerId); } catch (_err) { /* ignore */ }
+                }
+                holdPointerId = null;
+                this.renderer?.endBiteHold?.();
+            };
+
+            // Pointer events (мышь + тач)
+            biteBtn.addEventListener('pointerdown', startHold);
+            biteBtn.addEventListener('pointerup', endHold);
+            biteBtn.addEventListener('pointercancel', endHold);
+            biteBtn.addEventListener('lostpointercapture', endHold);
+            window.addEventListener('blur', endHold);
         }
 
         // Открытие таблицы лидеров по клику на BEST
@@ -392,7 +414,6 @@ class Game {
 
             this.state = 'COUNTDOWN';
             this.timer.reset();
-            this.director = null;
             this.perks.reset();
             this.audio.reset();
 
@@ -408,15 +429,9 @@ class Game {
         this.state = 'RUNNING';
         this.lastUpdateTime = performance.now();
         this.lastSnapshotTime = Date.now();
-        this.lastRenderedButtons = null;
-        this.lastRenderedCurrent = null;
-        this.lastPerksRender = 0;
         this.userInteracted = true; // Помечаем как взаимодействовал (клик на PLAY)
 
-        // Сброс ограничений/смерти для новой сессии
-        this.nextActionAllowedAtMs = 0;
-        this.lastActionAtMs = 0;
-        this.lastActionCooldownMs = 0;
+        // Сброс состояния смерти для новой сессии
         this.deathInProgress = false;
         
         // Кнопка BITE уже есть в HTML, не создаем динамически
@@ -428,13 +443,10 @@ class Game {
         if (this.renderer) {
             if (typeof this.renderer.stopStripAnimation === 'function') this.renderer.stopStripAnimation();
             if (typeof this.renderer.stopCircleAnimation === 'function') this.renderer.stopCircleAnimation();
-            if (typeof this.renderer.resetStripWindow === 'function') {
-                this.renderer.resetStripWindow();
-            }
         }
 
         // Рендерим ленту для начального состояния
-        this.renderer.renderNumberStrip(this.timer, null);
+        this.renderer.renderNumberStrip(this.timer);
         
             // Запуск игрового цикла
             this.gameLoop();
@@ -490,34 +502,14 @@ class Game {
 
     // Рендеринг
     render() {
-        const gameState = this.getGameState();
         // Лента обновляется в Renderer (physics/conveyor) каждый кадр из gameLoop.
-        
-        // Кнопка управления (всегда одна - открытие рта)
-        // В новой системе не используем director для кнопок
-        if (this.renderer && this.renderer.controlButtons) {
-            const hasButton = this.renderer.controlButtons.querySelector('.control-btn');
-            if (!hasButton) {
-                this.renderer.renderControlButtons([]);
-            }
-        }
-        
+
         // UI
         this.updateUI();
 
-        // Визуализация кулдауна на действиях (в реальном времени, независимо от перерендера кнопок)
-        const nowMs = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-        let cooldownProgress = 1;
-        if (this.lastActionCooldownMs > 0) {
-            cooldownProgress = Math.max(0, Math.min(1, (nowMs - this.lastActionAtMs) / this.lastActionCooldownMs));
-        }
-        if (this.renderer && typeof this.renderer.updateActionCooldown === 'function') {
-            this.renderer.updateActionCooldown(cooldownProgress);
-        }
-
         // Конвейер: позиция ленты обновляется каждый кадр
         if (this.renderer && typeof this.renderer.updateConveyor === 'function') {
-            this.renderer.updateConveyor(this.timer, null);
+            this.renderer.updateConveyor(this.timer);
         }
     }
 
@@ -538,21 +530,11 @@ class Game {
             // ignore
         }
 
-        // Блокируем дальнейшие действия игрока
-        this.nextActionAllowedAtMs = Infinity;
-
         // Даём игре доехать до финальной позы: через секунду показываем экран Game Over.
         window.setTimeout(() => {
             // Разрешаем gameOver из состояния DYING
             this.gameOver(meta);
         }, 1000);
-    }
-    
-    // Проверка необходимости рендера кнопок
-    shouldRenderButtons() {
-        // В новой механике всегда одна кнопка "проглотить/открыть рот",
-        // поэтому больше не сравниваем набор кнопок от Director.
-        return false;
     }
 
     // Обновление UI
@@ -657,10 +639,6 @@ class Game {
         // Важно: чтобы после countdown таймер не "догонял" время, проведённое в паузе
         if (this.timer) this.timer.lastStepTime = 0;
         this.lastUpdateTime = performance.now();
-        // После резюма снова разрешаем действия
-        this.nextActionAllowedAtMs = 0;
-        this.lastActionAtMs = 0;
-        this.lastActionCooldownMs = 0;
         this.deathInProgress = false;
         // Возобновляем музыку
         this.audio.play();
@@ -731,15 +709,11 @@ class Game {
     restart() {
         this.state = 'MENU';
         this.timer.reset();
-        this.director = null;
         this.perks.reset();
         this.audio.reset();
         this.storage.clearSnapshot();
 
-        // Сброс ограничений/смерти
-        this.nextActionAllowedAtMs = 0;
-        this.lastActionAtMs = 0;
-        this.lastActionCooldownMs = 0;
+        // Сброс состояния смерти
         this.deathInProgress = false;
         this.score = 0;
         this.updateUI();

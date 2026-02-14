@@ -9,9 +9,10 @@
     --circle-size: 63px;
     --lane-shift-y: calc(var(--circle-size) * 0.25); /* quarter of circle height */
 
-    /* Penguin sizing (used for ice scaling too) */
+    /* Penguin rig sizing */
     --penguin-w: min(360px, 62vw);
-    --penguin-h: calc(var(--penguin-w) * (251 / 410)); /* legacy visual height baseline */
+    --penguin-aspect-ratio: calc(378 / 196);
+    --penguin-h: calc(var(--penguin-w) / var(--penguin-aspect-ratio));
 }
 
 body {
@@ -614,12 +615,12 @@ body {
 /* Focus Zone */
 #focus-zone {
     position: absolute;
-    width: 200px;
-    height: 200px;
+    width: var(--penguin-w);
+    height: var(--penguin-h);
     /* Базовая посадка: пингвин чуть "вылезает" из-за левого края экрана.
        Это оставляет запас, чтобы при bite-сдвиге вправо форма головы
        выглядела как появляющаяся из-за края, а не как внезапно "обрезанная". */
-    left: -26px;
+    left: -80px;
     top: 50%;
     /* Lift penguin relative to the lane by 1/4 circle height */
     transform: translateY(-50%) translateY(calc(var(--lane-shift-y) * -1));
@@ -632,66 +633,36 @@ body {
     transform-origin: center center;
 }
 
-.focus-circle-static {
-    position: absolute;
-    width: 150px; /* Максимальный размер анимации (остается прежним) */
-    height: 150px;
-    border: 2px dotted rgba(0, 0, 0, 0.35);
-    border-radius: 50%;
-    box-shadow: none;
-    z-index: 9;
-}
-
-.focus-circle {
-    position: absolute;
-    width: 75px; /* Минимальный размер (уменьшен в 2 раза) */
-    height: 75px;
-    border: 6px solid #101010;
-    border-radius: 50%;
-    box-shadow: none;
-    transform-origin: center center;
-    will-change: transform;
-    z-index: 10;
-}
-
 .focus-penguin {
     position: absolute;
-    /* Новый head длиннее: держим прежний визуальный размер через поправку ширины. */
-    width: calc(var(--penguin-w) * 1.18);
+    width: var(--penguin-w);
     height: auto;
-    aspect-ratio: 378 / 196; /* new head-1.svg viewBox */
+    aspect-ratio: var(--penguin-aspect-ratio);
     transform-origin: center center;
     will-change: transform;
     z-index: 10;
     left: -22px;
 }
 
-/* Penguin composite (head + jaws) */
+/* Penguin rig root */
 .penguin {
     position: relative;
     width: 100%;
     height: 100%;
+    transform: none;
+    will-change: transform;
 }
 
 .penguin-layer {
     position: absolute;
-    top: 0;
-    left: 0;
+    inset: 0;
     width: 100%;
     height: 100%;
-    object-fit: contain;
-    user-select: none;
-    -webkit-user-drag: none;
+    transform-origin: 50% 50%;
     pointer-events: none;
 }
 
-.penguin-layer.penguin-jaw {
-    /* теперь челюсти = wrapper div, картинка внутри */
-    object-fit: unset;
-    pointer-events: none;
-}
-
-.penguin-jaw-img {
+.penguin-part {
     position: absolute;
     inset: 0;
     width: 100%;
@@ -702,96 +673,55 @@ body {
     pointer-events: none;
 }
 
-.teeth-collider {
-    position: absolute;
-    right: 0;
-    width: 18%;
-    height: 30%;
-    pointer-events: none;
-    opacity: 0; /* видим только в debug */
-    box-sizing: border-box;
-    border: 2px solid rgba(255, 0, 0, 0.95);
-    background: rgba(255, 0, 0, 0.10);
-}
-
-.teeth-collider--top { bottom: 0; display: none; } /* один коллайдер — только SVG-полигон в overlay */
-.teeth-collider--bot { top: 0; display: none; }
-
-/* Head fills the whole container */
-.penguin-head {
+.penguin-layer--head {
     z-index: 1;
 }
 
-/* Jaw rig in normalized head space (all values are % of current head box).
-   This keeps the whole construction stable and independent from raw SVG canvas sizes. */
-.penguin {
-    /* Размеры из твоих замеров:
-       head ~378.32x193.88, top-jaw ~272.82x86.43, bot-jaw ~248.43x100.72 */
-    --jaw-top-w: 72.1%;
-    --jaw-top-h: 44.6%;
-    --jaw-bot-w: 65.7%;
-    --jaw-bot-h: 52.0%;
-    /* Базовые позиции в той же нормализованной системе (дальше тюним только эти 4 переменные) */
-    --jaw-top-x: 52.2%;
-    --jaw-top-y: 22.2%;
-    --jaw-bot-x: 52.2%;
-    --jaw-bot-y: 41.8%;
+.penguin-layer--eye {
+    z-index: 2;
 }
 
-.penguin-jaw {
-    z-index: 3; /* передняя пара челюстей поверх головы */
+.penguin-layer--right-collider {
+    z-index: 2;
+}
+
+.penguin-layer--top-jaw {
+    z-index: 3;
+}
+
+.penguin-layer--bot-jaw {
+    z-index: 4;
+}
+
+.penguin-jaw-base {
+    z-index: 1;
+}
+
+.penguin-collider {
+    position: absolute;
+    inset: 0;
     width: 100%;
     height: 100%;
-    object-fit: contain;
+    pointer-events: none;
+    opacity: 0;
+    z-index: 2;
 }
 
-.penguin-jaw--top {
-    left: var(--jaw-top-x);
-    top: var(--jaw-top-y);
-    width: var(--jaw-top-w);
-    height: var(--jaw-top-h);
-    right: auto;
-    bottom: auto;
-    transform-origin: 0% 100%; /* left bottom corner */
+.penguin-tooth {
+    z-index: 3;
 }
 
-.penguin-jaw--bot {
-    left: var(--jaw-bot-x);
-    top: var(--jaw-bot-y);
-    width: var(--jaw-bot-w);
-    height: var(--jaw-bot-h);
-    right: auto;
-    bottom: auto;
-    transform-origin: 0% 0%; /* left top corner */
+/* Приоритет слоёв зубов: первые два выше, пятый ниже первых двух */
+#penguin-top-jaw .penguin-tooth:nth-of-type(2),
+#penguin-top-jaw .penguin-tooth:nth-of-type(3),
+#penguin-bot-jaw .penguin-tooth:nth-of-type(2),
+#penguin-bot-jaw .penguin-tooth:nth-of-type(3) {
+    z-index: 4;
 }
 
-/* При game over нижняя челюсть слегка опускается ниже (горизонтальное смещение
-   управляется логикой рендерера через transform всей конструкции головы). */
-.penguin-jaw--bot.game-over {
-    top: calc(var(--jaw-bot-y) + 13%);
-    transform: rotate(-15deg) scaleX(0.9);
-}
-
-/* При game over верхняя челюсть немного сужается по ширине,
-   сохраняя пропорции относительно головы (примерно -10% по X). */
-.penguin-jaw--top.game-over {
-    transform: scaleX(0.9);
-}
-
-.penguin {
-    --penguin-open-shift-x: 8px;
-    /* Компенсация "визуально стоящего" кончика зубов из-за ротации челюстей */
-    --jaw-top-open-extra-x: 14px;
-    --jaw-bot-open-extra-x: 9px;
-    /* Небольшой дополнительный X-сдвиг челюстей при открытии/повороте */
-    --jaw-open-rot-shift-x: 1px;
-    /* Калибровка зубного коллайдера (верхние зубы): закрытый/открытый рот */
-    --teeth-top-offset-x: -30px;
-    --teeth-top-offset-y: 0px;
-    --teeth-top-open-offset-x: -36px;
-    --teeth-top-open-offset-y: -8px;
-    transform: none;
-    will-change: transform;
+#penguin-top-jaw .penguin-tooth:nth-of-type(6),
+#penguin-bot-jaw .penguin-tooth:nth-of-type(6) {
+    z-index: 2;
 }
 
 /* ===== Mouth hold (press & hold) =====
@@ -801,10 +731,10 @@ body {
    - при отпускании рот закрывается за 0.1s (linear)
 */
 .penguin,
-.penguin .penguin-jaw--top,
-.penguin .penguin-jaw--bot,
-.penguin #penguin-head,
-.penguin .penguin-head {
+.penguin #penguin-head-layer,
+.penguin #penguin-eye-layer,
+.penguin #penguin-top-jaw,
+.penguin #penguin-bot-jaw {
     transition: transform 100ms linear;
     will-change: transform;
 }
@@ -1330,21 +1260,11 @@ body {
     }
     
     #focus-zone {
-        width: 150px;
-        height: 150px;
+        width: var(--penguin-w);
+        height: var(--penguin-h);
     }
 
     /* .focus-penguin keeps head aspect ratio globally; no mobile override */
-    
-    .focus-circle-static {
-        width: 130px; /* Максимальный размер для мобильных */
-        height: 130px;
-    }
-    
-    .focus-circle {
-        width: 65px; /* Минимальный размер (уменьшен в 2 раза) */
-        height: 65px;
-    }
 
     #hud {
         top: 12px;

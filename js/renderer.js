@@ -39,6 +39,8 @@ class Renderer {
             getNumberStrip: () => this.numberStrip,
             getPenguinParts: () => this.penguinRig.getPenguinParts(),
             isMouthOpen: () => this.penguinRig.isMouthOpen(),
+            isMouthFullyClosed: () => this.penguinRig.isMouthFullyClosed(),
+            triggerTeethHitFx: () => this.penguinRig.triggerTimingTeethHitFx(),
             isDebug: () => this.debug,
             getDebugState: () => this._dbg,
             animateEatIntoMouth: (circleEl, containerEl, containerRect, targetX, targetY) =>
@@ -121,64 +123,6 @@ class Renderer {
         this._dbg.count += 1;
         // eslint-disable-next-line no-console
         console.log(`[DBG:${key}]`, payload);
-    }
-
-    // Автокалибровка пропорций головы и челюстей по реальным SVG-ассетам,
-    // чтобы размеры челюстей совпадали с оригиналом относительно головы.
-    autoCalibratePenguinProportions() {
-        const apply = () => {
-            const parts = this.getPenguinParts();
-            if (!parts?.root) return;
-            const head = parts.head || document.getElementById('penguin-head');
-            const topJaw = parts.topJawImg || document.getElementById('penguin-top-jaw')?.querySelector?.('img.penguin-jaw-img') || document.getElementById('penguin-top-jaw');
-            const botJaw = parts.botJawImg || document.getElementById('penguin-bot-jaw')?.querySelector?.('img.penguin-jaw-img') || document.getElementById('penguin-bot-jaw');
-            if (!head || !topJaw || !botJaw) return;
-
-            const ready =
-                head.naturalWidth > 0 && head.naturalHeight > 0 &&
-                topJaw.naturalWidth > 0 && topJaw.naturalHeight > 0 &&
-                botJaw.naturalWidth > 0 && botJaw.naturalHeight > 0;
-            if (!ready) return;
-
-            const wHead = head.naturalWidth;
-            const hHead = head.naturalHeight;
-            if (!wHead || !hHead) return;
-
-            // Стабилизируем старые пропорции рига: челюсти считаем относительно
-            // legacy-головы, чтобы после замены head SVG рот и физика не "схлопывались".
-            const refHeadW = 410;
-            const refHeadH = 251;
-
-            const rootStyle = parts.root.style;
-            const setRatios = (jawImg, wVar, hVar) => {
-                const rw = jawImg.naturalWidth / refHeadW;
-                const rh = jawImg.naturalHeight / refHeadH;
-                // Пропорции берем напрямую из ассетов; позиции (x/y) не трогаем.
-                rootStyle.setProperty(wVar, `${(rw * 100).toFixed(2)}%`);
-                rootStyle.setProperty(hVar, `${(rh * 100).toFixed(2)}%`);
-            };
-
-            setRatios(topJaw, '--jaw-top-w', '--jaw-top-h');
-            setRatios(botJaw, '--jaw-bot-w', '--jaw-bot-h');
-        };
-
-        // Пытаемся сразу, если ассеты уже загружены
-        apply();
-
-        // Если ещё не загружены — один раз повесим onload
-        const parts = this.getPenguinParts();
-        const imgs = [
-            parts?.head || document.getElementById('penguin-head'),
-            parts?.topJawImg || document.getElementById('penguin-top-jaw')?.querySelector?.('img.penguin-jaw-img') || document.getElementById('penguin-top-jaw'),
-            parts?.botJawImg || document.getElementById('penguin-bot-jaw')?.querySelector?.('img.penguin-jaw-img') || document.getElementById('penguin-bot-jaw')
-        ].filter(Boolean);
-
-        imgs.forEach((img) => {
-            if (img.naturalWidth > 0 && img.naturalHeight > 0) {
-                return;
-            }
-            img.addEventListener('load', apply, { once: true });
-        });
     }
 
     // Анимация "успешного поедания": предмет плавно улетает в рот и растворяется
@@ -404,13 +348,13 @@ class Renderer {
             overlay.appendChild(svg);
         }
 
-        const ensurePoly = (id) => {
+        const ensurePoly = (id, { fill, stroke } = {}) => {
             let p = svg.querySelector(`#${id}`);
             if (!p) {
                 p = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
                 p.setAttribute('id', id);
-                p.setAttribute('fill', 'rgba(255,0,0,0.10)');
-                p.setAttribute('stroke', 'rgba(255,0,0,0.95)');
+                p.setAttribute('fill', fill || 'rgba(255,0,0,0.10)');
+                p.setAttribute('stroke', stroke || 'rgba(255,0,0,0.95)');
                 p.setAttribute('stroke-width', '2');
                 svg.appendChild(p);
             }
@@ -432,7 +376,9 @@ class Renderer {
             overlay,
             objectsContainer,
             svg,
-            teethTopPolyEl: ensurePoly('debug-teeth-top-poly'),
+            teethTopPolyEl: ensurePoly('debug-teeth-top-poly', { fill: 'rgba(255,0,0,0.10)', stroke: 'rgba(255,0,0,0.95)' }),
+            teethBotPolyEl: ensurePoly('debug-teeth-bot-poly', { fill: 'rgba(255,165,0,0.10)', stroke: 'rgba(255,165,0,0.95)' }),
+            rightColliderPolyEl: ensurePoly('debug-right-collider-poly', { fill: 'rgba(0,120,255,0.10)', stroke: 'rgba(0,120,255,0.95)' }),
             jawTopBox: ensure('debug-jaw-top-box', 'debug-box debug-jaw-top'),
             dangerBox: ensure('debug-danger-box', 'debug-box debug-danger'),
             biteLine: ensure('debug-bite-line', 'debug-line debug-bite'),
@@ -481,9 +427,9 @@ class Renderer {
         container.appendChild(box);
     }
 
-    updateDebugOverlay({ containerRect, jawTopRect, jawBotRect, teethTopPoly, dangerRect, biteX }) {
+    updateDebugOverlay({ containerRect, jawTopRect, jawBotRect, teethTopPoly, teethBotPoly, rightColliderPoly, dangerRect, biteX }) {
         if (!this.debug || !this.debugEls) return;
-        const { jawTopBox, dangerBox, biteLine, jawBottomLine, svg, teethTopPolyEl } = this.debugEls;
+        const { jawTopBox, dangerBox, biteLine, jawBottomLine, svg, teethTopPolyEl, teethBotPolyEl, rightColliderPolyEl } = this.debugEls;
 
         const placeBox = (box, rect) => {
             if (!rect) {
@@ -538,9 +484,9 @@ class Renderer {
         // 2. Объект в коллизии (если есть)
         placeBox(dangerBox, dangerRect);
         
-        // 3. Линия укуса (правая граница челюсти - показывает где заканчивается зона коллизии)
-        // Game over происходит когда объект пересекается с челюстью (не просто проходит эту линию)
+        // 3. Линия укуса (legacy) — скрываем, т.к. используем right-collider полигон.
         placeLine(biteLine, biteX);
+        if (biteLine) biteLine.style.display = 'none';
 
         // 4. Горизонтальная линия по нижней границе нижней челюсти
         if (jawBotRect && jawBottomLine) {
@@ -569,6 +515,8 @@ class Renderer {
             svg.setAttribute('viewBox', `0 0 ${containerRect.width} ${containerRect.height}`);
         }
         setPoly(teethTopPolyEl, teethTopPoly);
+        setPoly(teethBotPolyEl, teethBotPoly);
+        setPoly(rightColliderPolyEl, rightColliderPoly);
     }
 
     getPenguinParts() {

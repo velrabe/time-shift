@@ -67,14 +67,38 @@
             </div>
             <div id="focus-zone">
                 <div id="penguin-root" class="focus-penguin penguin" aria-label="Penguin">
-                    <img id="penguin-head" class="penguin-layer penguin-head" src="img/head-1.svg" alt="">
-                    <div id="penguin-top-jaw" class="penguin-layer penguin-jaw penguin-jaw--top" aria-hidden="true">
-                        <img class="penguin-jaw-img" src="img/top-jaw-1.svg" alt="">
-                        <div class="teeth-collider teeth-collider--top" aria-hidden="true"></div>
+                    <div id="penguin-head-layer" class="penguin-layer penguin-layer--head" aria-hidden="true">
+                        <img id="penguin-head" class="penguin-part" src="img/head/head-1.svg" alt="">
                     </div>
-                    <div id="penguin-bot-jaw" class="penguin-layer penguin-jaw penguin-jaw--bot" aria-hidden="true">
-                        <img class="penguin-jaw-img" src="img/bot-jaw-1.svg" alt="">
-                        <div class="teeth-collider teeth-collider--bot" aria-hidden="true"></div>
+                    <div id="penguin-eye-layer" class="penguin-layer penguin-layer--eye" aria-hidden="true">
+                        <img id="penguin-eye" class="penguin-part" src="img/head/eye-1.svg" alt="">
+                    </div>
+                    <div id="penguin-right-collider-layer" class="penguin-layer penguin-layer--right-collider" aria-hidden="true">
+                        <svg class="penguin-collider" viewBox="0 0 546 200" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                            <path id="penguin-right-collider-path" d="M506.904 164.715L505.566 67.5791H490.524L493.759 168.755L506.904 164.715Z" fill="none" stroke="none"/>
+                        </svg>
+                    </div>
+                    <div id="penguin-top-jaw" class="penguin-layer penguin-layer--top-jaw" aria-hidden="true">
+                        <img class="penguin-part penguin-jaw-base" src="img/head/top-jaw-1.svg" alt="">
+                        <svg class="penguin-collider" viewBox="0 0 546 200" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                            <path id="penguin-top-collider-path" d="M506.874 107.896L503.973 67.5786H469.708L476.738 109.668L506.874 107.896Z" fill="none" stroke="none"/>
+                        </svg>
+                        <img class="penguin-part penguin-tooth" src="img/head/tooth-top-1.svg" alt="">
+                        <img class="penguin-part penguin-tooth" src="img/head/tooth-top-2.svg" alt="">
+                        <img class="penguin-part penguin-tooth" src="img/head/tooth-top-3.svg" alt="">
+                        <img class="penguin-part penguin-tooth" src="img/head/tooth-top-4.svg" alt="">
+                        <img class="penguin-part penguin-tooth" src="img/head/tooth-top-5.svg" alt="">
+                    </div>
+                    <div id="penguin-bot-jaw" class="penguin-layer penguin-layer--bot-jaw" aria-hidden="true">
+                        <img class="penguin-part penguin-jaw-base" src="img/head/bot-jaw-1.svg" alt="">
+                        <svg class="penguin-collider" viewBox="0 0 546 200" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                            <path id="penguin-bot-collider-path" d="M506.56 165.001L469.134 171.94L467.14 126.833L502.324 116.426L506.56 165.001Z" fill="none" stroke="none"/>
+                        </svg>
+                        <img class="penguin-part penguin-tooth" src="img/head/tooth-bot-1.svg" alt="">
+                        <img class="penguin-part penguin-tooth" src="img/head/tooth-bot-2.svg" alt="">
+                        <img class="penguin-part penguin-tooth" src="img/head/tooth-bot-3.svg" alt="">
+                        <img class="penguin-part penguin-tooth" src="img/head/tooth-bot-4.svg" alt="">
+                        <img class="penguin-part penguin-tooth" src="img/head/tooth-bot-5.svg" alt="">
                     </div>
                 </div>
             </div>

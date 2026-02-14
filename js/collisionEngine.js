@@ -3,6 +3,8 @@ class CollisionEngine {
         this.getNumberStrip = options.getNumberStrip;
         this.getPenguinParts = options.getPenguinParts;
         this.isMouthOpen = options.isMouthOpen;
+        this.isMouthFullyClosed = options.isMouthFullyClosed;
+        this.triggerTeethHitFx = options.triggerTeethHitFx;
         this.isDebug = options.isDebug;
         this.getDebugState = options.getDebugState;
         this.animateEatIntoMouth = options.animateEatIntoMouth;
@@ -26,95 +28,25 @@ class CollisionEngine {
         };
     }
 
-    buildTopTeethPoly(parts, isMouthOpenNow) {
-        const clamp01 = (v) => Math.max(0, Math.min(1, v));
-        const lerp = (a, b, t) => a + (b - a) * t;
-        const lerpPoint = (a, b, t) => ({ x: lerp(a.x, b.x, t), y: lerp(a.y, b.y, t) });
-        const parsePercent = (raw) => {
-            const s = String(raw || '').trim();
-            const m = s.match(/^(-?\d+(?:\.\d+)?)%$/);
-            if (!m) return null;
-            return parseFloat(m[1]) / 100;
-        };
-        const parsePx = (raw) => {
-            const s = String(raw || '').trim();
-            const m = s.match(/^(-?\d+(?:\.\d+)?)px$/);
-            if (!m) return null;
-            return parseFloat(m[1]);
-        };
+    getPathPolyOnScreen(pathEl, sampleCount = 20) {
+        if (!pathEl || typeof pathEl.getTotalLength !== 'function') return null;
+        const len = pathEl.getTotalLength();
+        if (!Number.isFinite(len) || len <= 0) return null;
+        const ctm = pathEl.getScreenCTM?.();
+        if (!ctm) return null;
 
-        const style = window.getComputedStyle(parts.root);
-        const getVarPct = (name, fallback) => {
-            const v = parsePercent(style.getPropertyValue(name));
-            return Number.isFinite(v) ? v : fallback;
-        };
-        const getVarPx = (name, fallback) => {
-            const v = parsePx(style.getPropertyValue(name));
-            return Number.isFinite(v) ? v : fallback;
-        };
-
-        const rootRect = parts.root.getBoundingClientRect();
-        const openShiftX = isMouthOpenNow ? getVarPx('--penguin-open-shift-x', 8) : 0;
-        const topExtraShiftX = isMouthOpenNow ? getVarPx('--jaw-top-open-extra-x', 0) : 0;
-        const topRotateExtraShiftX = isMouthOpenNow ? getVarPx('--jaw-open-rot-shift-x', 2) : 0;
-        const topL = getVarPct('--jaw-top-x', 0.47);
-        const topT = getVarPct('--jaw-top-y', 0.235);
-        const topW = getVarPct('--jaw-top-w', 0.666);
-        const topH = getVarPct('--jaw-top-h', 0.344);
-
-        const makeJawPoly = (cfg) => {
-            const left = rootRect.left + cfg.l * rootRect.width;
-            const top = rootRect.top + cfg.t * rootRect.height;
-            const w = cfg.w * rootRect.width;
-            const h = cfg.h * rootRect.height;
-            const p1 = { x: left, y: top };
-            const p2 = { x: left + w, y: top };
-            const p3 = { x: left + w, y: top + h };
-            const p4 = { x: left, y: top + h };
-            const origin = cfg.origin === 'lb' ? { x: left, y: top + h } : { x: left, y: top };
-            const deg = isMouthOpenNow ? cfg.openDeg : 0;
-            const dx = isMouthOpenNow ? cfg.openDx : 0;
-            const dy = isMouthOpenNow ? cfg.openDy : 0;
-            const rad = (deg * Math.PI) / 180;
-            const cos = Math.cos(rad);
-            const sin = Math.sin(rad);
-            const rot = (p) => {
-                const x = p.x - origin.x;
-                const y = p.y - origin.y;
-                const rx = x * cos - y * sin;
-                const ry = x * sin + y * cos;
-                return { x: origin.x + rx + dx, y: origin.y + ry + dy };
-            };
-            return [rot(p1), rot(p2), rot(p3), rot(p4)];
-        };
-
-        const topJawPoly = makeJawPoly({
-            l: topL,
-            t: topT,
-            w: topW,
-            h: topH,
-            origin: 'lb',
-            openDx: openShiftX + topExtraShiftX + topRotateExtraShiftX,
-            openDy: -3,
-            openDeg: -16
-        });
-        const teethFracW = 0.16;
-        const teethFracH = 0.22;
-        const [p1, p2, p3, p4] = topJawPoly;
-        const tW = clamp01(1 - teethFracW);
-        const topStart = lerpPoint(p1, p2, tW);
-        const bottomStart = lerpPoint(p4, p3, tW);
-        const h = clamp01(teethFracH);
-        const tipTopL = lerpPoint(bottomStart, topStart, h);
-        const tipTopR = lerpPoint(p3, p2, h);
-        // Оффсеты зубного полигона калибруются отдельно для закрытого/открытого рта.
-        const teethLocalOffsetX = isMouthOpenNow
-            ? getVarPx('--teeth-top-open-offset-x', -36)
-            : getVarPx('--teeth-top-offset-x', -30);
-        const teethLocalOffsetY = isMouthOpenNow
-            ? getVarPx('--teeth-top-open-offset-y', -8)
-            : getVarPx('--teeth-top-offset-y', 0);
-        return [tipTopL, tipTopR, p3, bottomStart].map((p) => ({ x: p.x + teethLocalOffsetX, y: p.y + teethLocalOffsetY }));
+        const points = [];
+        const steps = Math.max(4, sampleCount);
+        for (let i = 0; i < steps; i += 1) {
+            const t = (i / (steps - 1)) * len;
+            const p = pathEl.getPointAtLength(t);
+            if (!p) continue;
+            const screenPt = (typeof DOMPoint === 'function')
+                ? new DOMPoint(p.x, p.y).matrixTransform(ctm)
+                : { x: (p.x * ctm.a) + (p.y * ctm.c) + ctm.e, y: (p.x * ctm.b) + (p.y * ctm.d) + ctm.f };
+            points.push({ x: screenPt.x, y: screenPt.y });
+        }
+        return points.length >= 3 ? points : null;
     }
 
     polygonsOverlapSAT(polyA, polyB) {
@@ -168,7 +100,10 @@ class CollisionEngine {
 
         const { jawRight, jawTop, jawBottom } = this.getMouthBounds(containerRect, jawTopRect, jawBotRect);
         const mouthOpen = !!this.isMouthOpen?.();
-        const teethTopPoly = this.buildTopTeethPoly(parts, mouthOpen);
+        const mouthFullyClosed = !!this.isMouthFullyClosed?.();
+        const rightColliderPoly = this.getPathPolyOnScreen(parts.rightColliderPath, 24);
+        const topColliderPoly = this.getPathPolyOnScreen(parts.topColliderPath, 24);
+        const botColliderPoly = this.getPathPolyOnScreen(parts.botColliderPath, 24);
 
         const circles = Array.from(numberStrip.querySelectorAll('.number-circle:not(.passed)'));
         let nearestCircle = null;
@@ -207,16 +142,28 @@ class CollisionEngine {
                 { x: foodRectPage.right, y: foodRectPage.bottom },
                 { x: foodRectPage.left, y: foodRectPage.bottom }
             ];
-            const teethCollision = this.polygonsOverlapSAT(foodPoly, teethTopPoly);
+            const topCollision = this.polygonsOverlapSAT(foodPoly, topColliderPoly);
+            const botCollision = this.polygonsOverlapSAT(foodPoly, botColliderPoly);
+            const teethCollision = topCollision || botCollision;
+            const rightColliderHit = this.polygonsOverlapSAT(foodPoly, rightColliderPoly);
+            // В полностью закрытом состоянии приоритет у right-collider:
+            // даже если геометрически есть пересечение с зубным collider, это уже "closed mouth left hit".
+            const closedMouthLeftHit = mouthFullyClosed && overlapsMouthVert && rightColliderHit;
+            // "Невовремя захлопнулась" = рот уже не открыт, но ещё не полностью закрылся.
+            const timingJawHit = (!mouthOpen) && (!mouthFullyClosed) && teethCollision;
+            const isDeathCollision = timingJawHit || closedMouthLeftHit;
 
             if (this.isDebug?.()) {
-                if (teethCollision) circle.classList.add('game-over-trigger');
+                if (isDeathCollision) circle.classList.add('game-over-trigger');
                 else circle.classList.remove('game-over-trigger');
             }
 
-            if (teethCollision) {
+            if (isDeathCollision) {
                 collidingCircle = circle;
                 const value = parseInt(circle.dataset.value, 10) || 0;
+                const reason = timingJawHit
+                    ? (topCollision ? 'TIMING_JAW_HIT_TOP' : 'TIMING_JAW_HIT_BOT')
+                    : 'CLOSED_MOUTH_LEFT_HIT';
 
                 if (this.isDebug?.()) {
                     const dangerRect = foodRectPage;
@@ -225,7 +172,9 @@ class CollisionEngine {
                         containerRect,
                         jawTopRect,
                         jawBotRect,
-                        teethTopPoly,
+                        teethTopPoly: topColliderPoly,
+                        teethBotPoly: botColliderPoly,
+                        rightColliderPoly,
                         dangerRect,
                         biteX: jawRight
                     });
@@ -236,9 +185,15 @@ class CollisionEngine {
                     this.dbgLog?.('death', {
                         value,
                         mouthOpen,
-                        kind: 'TEETH_COLLISION'
+                        kind: reason
                     }, 0);
-                    this.emitEvent?.('PENGUIN_COLLISION', { reason: 'TEETH_COLLISION', value });
+                    if (timingJawHit) {
+                        this.triggerTeethHitFx?.();
+                    }
+                    this.emitEvent?.('PENGUIN_COLLISION', {
+                        reason,
+                        value
+                    });
                 }
                 circle.dataset.processed = 'true';
                 return;
@@ -283,7 +238,9 @@ class CollisionEngine {
                 containerRect,
                 jawTopRect,
                 jawBotRect,
-                teethTopPoly,
+                teethTopPoly: topColliderPoly,
+                teethBotPoly: botColliderPoly,
+                rightColliderPoly,
                 dangerRect: null,
                 biteX: jawRight
             });

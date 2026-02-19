@@ -48,7 +48,7 @@ async function init() {
         // Важно: если пользователь кликнул PLAY до завершения init(), Game сам запустится
         // после инициализации (pendingStart). В таком случае не показываем стартовый экран поверх игры.
         if (game && game.state === 'MENU') {
-            game.renderer.showStartScreen();
+            game.renderer.showStartScreen(game.getGameState());
         }
     } catch (error) {
         console.error('Ошибка инициализации игры:', error);

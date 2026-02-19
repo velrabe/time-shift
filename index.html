@@ -4,6 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>TimeShift</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -12,41 +15,73 @@
         <div id="ui-overlay">
             <div id="hud">
                 <div id="hud-top">
-                    <div id="best-hint" class="hud-chip" role="button" tabindex="0" aria-label="Open leaderboard">
-                        <div class="hud-chip-icon-large">
-                            <img src="img/ui/cup.svg" alt="">
-                        </div>
-                        <div class="hud-chip-content">
-                            <div class="hud-chip-main">
-                                <div class="hud-chip-title">Best Score</div>
-                                <div id="best-score" class="hud-chip-value">0</div>
+                    <div id="best-hint" class="score-container" role="button" tabindex="0" aria-label="Open leaderboard">
+                        <div class="score-wrapper">
+                            <div class="score-current">
+                                <div id="score-value" class="score-value">0</div>
+                                <div class="score-best-row">
+                                    <span class="score-best-label">Best Score</span>
+                                    <span id="best-score" class="score-best-value">0</span>
+                                </div>
                             </div>
-                            <div id="best-rank" class="hud-chip-rank">#—</div>
+                            <div class="score-rank">
+                                <div class="score-rank-icon">
+                                    <img src="img/ui/cup.svg" alt="">
+                                </div>
+                                <div class="score-rank-stack">
+                                    <span class="score-rank-label">Rank</span>
+                                    <span id="best-rank" class="score-rank-value">#—</span>
+                                </div>
+                            </div>
                         </div>
                     </div>
 
-                    <div id="streak-progress" aria-label="Streak progress">
-                        <div id="streak-label">STREAK</div>
-                        <div class="streak-bar" role="progressbar" aria-valuemin="0" aria-valuemax="50" aria-valuenow="0">
-                            <div id="streak-fill"></div>
+                    <div id="streak-progress" class="coin-rush-wrapper" aria-label="Coin Rush progress">
+                        <div id="coin-rush-container" class="coin-rush-container">
+                            <div class="coin-rush-bar" role="progressbar" aria-valuemin="0" aria-valuemax="20" aria-valuenow="0">
+                                <div class="coin-rush-segment"><div class="coin-rush-segment-fill"></div></div>
+                                <div class="coin-rush-segment"><div class="coin-rush-segment-fill"></div></div>
+                            </div>
+                            <div id="coin-rush-counter" class="coin-rush-counter">0/50</div>
                         </div>
-                        <div id="streak-text">0/50</div>
+                        <div id="coin-rush-button" class="coin-rush-button hidden" role="button" tabindex="0" aria-label="Coin Rush">
+                            <div class="coin-rush-button-inner">
+                                <div class="coin-rush-button-icon">
+                                    <img src="img/ui/rocket.svg" alt="" aria-hidden="true">
+                                </div>
+                                <span class="coin-rush-button-text">Coin Rush</span>
+                                <div class="coin-rush-button-hotkey"><span>SHIFT</span></div>
+                            </div>
+                        </div>
                     </div>
 
                     <div id="hud-actions">
-                        <button id="sound-btn" class="icon-btn icon-btn--sound" aria-label="Toggle sound" title="Sound">
-                            <img id="sound-icon" src="img/ui/sound-on.svg" alt="" aria-hidden="true">
-                        </button>
-                        <button id="pause-btn" class="icon-btn icon-btn--pause" aria-label="Pause" title="Pause">
-                            <img src="img/ui/pause.svg" alt="" aria-hidden="true">
-                        </button>
+                        <div id="perks-btn" class="hud-perks-btn" role="button" tabindex="0" aria-label="Perks" title="Perks">
+                            <div class="hud-perks-inner">
+                                <img src="img/ui/perks.svg" alt="" aria-hidden="true" class="hud-perks-icon">
+                                <div class="hud-perks-text">
+                                    <span class="hud-perks-label">perks</span>
+                                    <div class="hud-perks-coins">
+                                        <img src="img/ui/coin.svg" alt="" aria-hidden="true" class="hud-perks-coin">
+                                        <span id="perks-coins-count" class="hud-perks-coins-value">0</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="hud-icon-btn">
+                            <button id="sound-btn" class="hud-icon-btn-inner icon-btn--sound" aria-label="Toggle sound" title="Sound">
+                                <img id="sound-icon" src="img/ui/sound-on.svg" alt="" aria-hidden="true">
+                            </button>
+                        </div>
+                        <div class="hud-icon-btn">
+                            <button id="pause-btn" class="hud-icon-btn-inner" aria-label="Pause" title="Pause">
+                                <img src="img/ui/pause.svg" alt="" aria-hidden="true">
+                            </button>
+                        </div>
                     </div>
                 </div>
 
-                <div id="score-hud" aria-label="Score">
-                    <div id="score-value">0</div>
-                    <div id="score-label">score</div>
-                </div>
+                <div id="score-hud" class="score-hud--hidden" aria-hidden="true"></div>
             </div>
         </div>
 
@@ -106,84 +141,153 @@
 
         <!-- Control Buttons -->
         <div id="controls">
-            <div id="controls-inner">
-                <div id="control-buttons">
+            <div id="control-buttons">
+                <div id="slow-btn-wrap" class="action-btn-wrap action-btn--spell">
+                    <button
+                        id="slowdown-btn"
+                        class="action-spell-btn perk-btn"
+                        type="button"
+                        disabled
+                        aria-label="Slow time"
+                        title="Slow time"
+                    >
+                        <img src="img/ui/slow.svg" alt="" aria-hidden="true">
+                        <span>SLOW</span>
+                        <span class="action-hotkey">K1</span>
+                    </button>
+                    <div class="action-spell-count" data-count="1">x1</div>
+                </div>
+                <div class="action-btn-wrap action-btn--bite">
                     <button
                         id="bite-btn"
-                        class="control-btn bite-btn"
+                        class="action-bite-btn"
                         type="button"
                         aria-label="Bite"
                     >
-                        <span class="bite-btn-label">BITE</span>
-                        <span class="bite-btn-key">SPACE</span>
+                        <span class="action-bite-label">BITE</span>
+                        <span class="action-hotkey">SPACE</span>
                     </button>
+                </div>
+                <div id="shield-btn-wrap" class="action-btn-wrap action-btn--spell">
                     <button
-                        id="slowdown-btn"
-                        class="ui-btn slow-btn perk-btn"
+                        id="shield-btn"
+                        class="action-spell-btn"
                         type="button"
                         disabled
-                        aria-label="Slow time for 2s"
-                        title="Slow time for 2s"
+                        aria-label="Shield"
+                        title="Shield"
                     >
-                        <img src="img/ui/slow-mode.svg" alt="" aria-hidden="true">
+                        <img src="img/ui/shield.svg" alt="" aria-hidden="true">
+                        <span>SHIELD</span>
+                        <span class="action-hotkey">K2</span>
                     </button>
+                    <div class="action-spell-count" data-count="1">x1</div>
                 </div>
             </div>
         </div>
 
         <!-- Pause Screen -->
-        <div id="pause-screen" class="overlay-screen hidden">
-            <div class="overlay-content">
-                <h2>Paused</h2>
-                <button id="resume-btn" class="ui-btn">Resume</button>
-                <div class="volume-control">
-                    <label for="pause-volume-slider">Volume:</label>
-                    <input type="range" id="pause-volume-slider" min="0" max="100" value="50">
-                    <span id="pause-volume-value">50%</span>
+        <div id="pause-screen" class="overlay-screen pause-overlay hidden">
+            <div class="pause-popup">
+                <div class="pause-title">Pause</div>
+                <div class="pause-buttons">
+                    <button id="resume-btn" class="pause-btn pause-btn--primary" type="button">
+                        <img src="img/ui/pause.svg" alt="" aria-hidden="true">
+                        <span>RESUME</span>
+                    </button>
+                    <button id="pause-restart-btn" class="pause-btn pause-btn--secondary" type="button">
+                        <img src="img/ui/menu-restart.svg" alt="" aria-hidden="true">
+                        <span>RESTART</span>
+                    </button>
+                    <button id="pause-sound-btn" class="pause-btn pause-btn--secondary" type="button">
+                        <img id="pause-sound-icon" src="img/ui/sound-on.svg" alt="" aria-hidden="true">
+                        <span id="pause-sound-text">SOUND: ON</span>
+                    </button>
+                    <button id="pause-language-btn" class="pause-btn pause-btn--secondary" type="button">
+                        <img src="img/ui/language.svg" alt="" aria-hidden="true">
+                        <span>LANGUAGE</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Language Screen (overlay over pause) -->
+        <div id="language-screen" class="overlay-screen language-overlay hidden">
+            <div class="pause-popup">
+                <div class="pause-title">Language</div>
+                <div class="pause-buttons">
+                    <button id="language-back-btn" class="pause-btn pause-btn--primary" type="button">
+                        <img src="img/ui/back.svg" alt="" aria-hidden="true">
+                        <span>BACK</span>
+                    </button>
+                    <button id="lang-en" class="pause-btn pause-btn--lang" type="button" data-lang="en">
+                        <span>English</span>
+                    </button>
+                    <button id="lang-ru" class="pause-btn pause-btn--lang pause-btn--lang-active" type="button" data-lang="ru">
+                        <span>русский</span>
+                    </button>
+                    <button id="lang-es" class="pause-btn pause-btn--lang" type="button" data-lang="es">
+                        <span>Español</span>
+                    </button>
                 </div>
             </div>
         </div>
 
         <!-- Leaderboard Modal -->
-        <div id="leaderboard-modal" class="overlay-screen hidden" role="dialog" aria-modal="true" aria-label="Leaderboard">
-            <div class="leaderboard-content">
-                <div class="leaderboard-header">
-                    <div class="leaderboard-title">Leaderboard</div>
-                    <button id="leaderboard-close-btn" class="ui-btn lb-small-btn" type="button" aria-label="Close leaderboard" title="Close">CLOSE</button>
+        <div id="leaderboard-modal" class="overlay-screen lb-overlay hidden" role="dialog" aria-modal="true" aria-label="Leaderboard">
+            <div class="leaderboard-popup">
+                <div class="lb-header">
+                    <h2 class="lb-title">Leaderboard</h2>
+                    <button id="leaderboard-close-btn" class="lb-close-btn" type="button" aria-label="Close leaderboard" title="Close">
+                        <img src="img/ui/x-mark.svg" alt="" aria-hidden="true">
+                    </button>
                 </div>
 
-                <div class="leaderboard-name-bar">
-                    <div id="leaderboard-name-hint" class="leaderboard-name-hint">
-                        We gave you a name. You can change it anytime.
+                <div class="lb-table-wrap">
+                    <div class="lb-table-header">
+                        <div class="lb-col lb-col--rank">#</div>
+                        <div class="lb-col lb-col--name">Name</div>
+                        <div class="lb-col lb-col--score">Score</div>
                     </div>
-                    <div class="leaderboard-name-actions">
-                        <button id="leaderboard-reroll-btn" class="ui-btn lb-small-btn" type="button">Reroll</button>
-                        <button id="leaderboard-edit-btn" class="ui-btn lb-small-btn" type="button">Edit</button>
+                    <div class="lb-table-body" id="leaderboard-table-body">
+                        <div class="lb-fade-overlay lb-fade-overlay--top" aria-hidden="true"></div>
+                        <div id="leaderboard-list" class="leaderboard-list" role="rowgroup"></div>
+                        <div class="lb-fade-overlay lb-fade-overlay--bottom" aria-hidden="true"></div>
                     </div>
                 </div>
 
-                <div class="leaderboard-table" role="table" aria-label="Top players">
-                    <div class="leaderboard-row leaderboard-row--head" role="row">
-                        <div class="lb-col lb-col--rank" role="columnheader">#</div>
-                        <div class="lb-col lb-col--name" role="columnheader">Name</div>
-                        <div class="lb-col lb-col--score" role="columnheader">Score</div>
-                    </div>
-
-                    <div id="leaderboard-list" class="leaderboard-list" role="rowgroup" aria-label="Top 10"></div>
-
-                    <div id="leaderboard-me" class="leaderboard-me" role="rowgroup" aria-label="Your position"></div>
-                </div>
+                <div id="leaderboard-me" class="lb-me" role="rowgroup" aria-label="Your position"></div>
             </div>
         </div>
 
         <!-- Game Over Screen -->
-        <div id="game-over-screen" class="overlay-screen hidden">
-            <div class="overlay-content">
-                <h2>Game Over</h2>
-                <div id="final-score">Score: 0</div>
-                <div id="game-over-buttons">
-                    <button id="continue-btn" class="ui-btn" disabled>Continue</button>
-                    <button id="restart-btn" class="ui-btn">Restart</button>
+        <div id="game-over-screen" class="overlay-screen game-over-overlay hidden">
+            <div class="game-over-popup">
+                <div class="game-over-title">Game Over</div>
+                <div class="game-over-score-block">
+                    <div class="game-over-score-text">
+                        <span class="game-over-score-label">Final Score</span>
+                        <span id="final-score" class="game-over-score-value">0</span>
+                    </div>
+                    <div class="game-over-divider"></div>
+                    <div class="game-over-best-row">
+                        <span class="game-over-best-label">Best Score</span>
+                        <span id="final-best-score" class="game-over-best-value">0</span>
+                    </div>
+                    <div class="game-over-divider"></div>
+                    <div class="game-over-coins-row">
+                        <span class="game-over-coins-label">Coins earned</span>
+                        <div class="game-over-coins-container">
+                            <img src="img/ui/coin.svg" alt="" class="game-over-coin-icon">
+                            <span id="final-coins" class="game-over-coins-value">0</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="game-over-button-wrapper">
+                    <button id="restart-btn" class="game-over-restart-btn" type="button" aria-label="Restart">
+                        <img src="img/ui/restart.svg" alt="" aria-hidden="true">
+                        <span>Restart</span>
+                    </button>
                 </div>
             </div>
         </div>
@@ -195,15 +299,66 @@
             </div>
         </div>
 
-        <!-- Start Screen -->
-        <div id="start-screen" class="overlay-screen">
-            <div class="overlay-content">
-                <h2>TimeShift</h2>
-                <button id="play-btn" class="ui-btn play-btn">PLAY</button>
-                <div id="volume-control">
-                    <label for="volume-slider">Volume:</label>
-                    <input type="range" id="volume-slider" min="0" max="100" value="50">
-                    <span id="volume-value">50%</span>
+        <!-- Start Screen (Start Game popup) -->
+        <div id="start-screen" class="overlay-screen start-game-overlay">
+            <div id="start-game-popup" class="start-game-popup">
+                <div class="start-game-header">
+                    <h2 class="start-game-title">Start Game</h2>
+                    <div class="start-game-coins">
+                        <img src="img/ui/coin.svg" alt="" class="start-game-coin-icon" aria-hidden="true">
+                        <span id="start-game-coins-count" class="start-game-coins-value">0</span>
+                    </div>
+                </div>
+                <div class="start-game-spells">
+                    <div id="start-buy-slow" class="start-spell-btn" role="button" tabindex="0">
+                        <div class="start-spell-btn-inner">
+                            <div class="start-spell-icon-block">
+                                <img src="img/ui/slow.svg" alt="" class="start-spell-icon">
+                                <div class="start-spell-count-block">
+                                    <span id="start-slow-count" class="start-spell-count-value">1</span>x
+                                </div>
+                            </div>
+                            <div class="start-spell-text">
+                                <span class="start-spell-name">SLOW</span>
+                                <span class="start-spell-desc">slows down food by 5 seconds</span>
+                            </div>
+                            <div class="start-spell-buy-wrap">
+                                <button type="button" class="start-buy-btn" data-spell="slow" aria-label="Buy Slow for 10 coins">
+                                    <span class="start-buy-text">Buy</span>
+                                    <div class="start-buy-price">
+                                        <img src="img/ui/coin.svg" alt="" class="start-buy-coin" aria-hidden="true">
+                                        <span data-price="10">10</span>
+                                    </div>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="start-buy-shield" class="start-spell-btn" role="button" tabindex="0">
+                        <div class="start-spell-btn-inner">
+                            <div class="start-spell-icon-block">
+                                <img src="img/ui/shield.svg" alt="" class="start-spell-icon">
+                                <div class="start-spell-count-block">
+                                    <span id="start-shield-count" class="start-spell-count-value">1</span>x
+                                </div>
+                            </div>
+                            <div class="start-spell-text">
+                                <span class="start-spell-name">SHIELD</span>
+                                <span class="start-spell-desc">protects against one mistake</span>
+                            </div>
+                            <div class="start-spell-buy-wrap">
+                                <button type="button" class="start-buy-btn" data-spell="shield" aria-label="Buy Shield for 5 coins">
+                                    <span class="start-buy-text">Buy</span>
+                                    <div class="start-buy-price">
+                                        <img src="img/ui/coin.svg" alt="" class="start-buy-coin" aria-hidden="true">
+                                        <span data-price="5">5</span>
+                                    </div>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="start-game-play-wrap">
+                    <button id="play-btn" type="button" class="start-play-btn" aria-label="Play">PLAY</button>
                 </div>
             </div>
         </div>

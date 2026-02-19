@@ -140,9 +140,9 @@ class Game {
             // +1 очко за ЛЮБОЙ съеденный объект
             this.score = (this.score || 0) + 1;
 
-            // В новой механике streak = серия проглоченных объектов
+            // В новой механике streak = серия проглоченных объектов (+5 за укус)
             if (this.perks && typeof this.perks.addStreak === 'function') {
-                this.perks.addStreak(1);
+                this.perks.addStreak(5);
             }
 
             // При желании score/streak можно логировать для дебага
@@ -203,6 +203,44 @@ class Game {
             resumeBtn.addEventListener('click', () => this.resume());
         }
 
+        const pauseRestartBtn = document.getElementById('pause-restart-btn');
+        if (pauseRestartBtn) {
+            pauseRestartBtn.addEventListener('click', () => {
+                this.renderer?.hidePauseScreen?.();
+                this.restart();
+            });
+        }
+
+        const pauseSoundBtn = document.getElementById('pause-sound-btn');
+        if (pauseSoundBtn) {
+            pauseSoundBtn.addEventListener('click', () => this.toggleSound());
+        }
+
+        const pauseLanguageBtn = document.getElementById('pause-language-btn');
+        if (pauseLanguageBtn) {
+            pauseLanguageBtn.addEventListener('click', () => {
+                this.renderer?.showLanguageScreen?.();
+            });
+        }
+
+        const languageBackBtn = document.getElementById('language-back-btn');
+        if (languageBackBtn) {
+            languageBackBtn.addEventListener('click', () => {
+                this.renderer?.hideLanguageScreen?.();
+            });
+        }
+
+        ['lang-en', 'lang-ru', 'lang-es'].forEach((id) => {
+            const btn = document.getElementById(id);
+            if (btn) {
+                btn.addEventListener('click', () => {
+                    document.querySelectorAll('.pause-btn--lang').forEach((b) => b.classList.remove('pause-btn--lang-active'));
+                    btn.classList.add('pause-btn--lang-active');
+                    /* Локализация — позже */
+                });
+            }
+        });
+
         const restartBtn = document.getElementById('restart-btn');
         if (restartBtn) {
             restartBtn.addEventListener('click', () => this.restart());
@@ -218,6 +256,21 @@ class Game {
         if (playBtn) {
             playBtn.addEventListener('click', () => this.start());
         }
+
+        // Buy Slow / Buy Shield на стартовом экране
+        document.querySelectorAll('.start-buy-btn').forEach((btn) => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const spell = btn.dataset?.spell;
+                if (spell === 'slow' && this.perks?.buySlow?.()) {
+                    this.updateUI();
+                    this.renderer?.ui?.updateStartGameScreen?.(this.getGameState());
+                } else if (spell === 'shield' && this.perks?.buyShield?.()) {
+                    this.updateUI();
+                    this.renderer?.ui?.updateStartGameScreen?.(this.getGameState());
+                }
+            });
+        });
 
         const slowDownBtn = document.getElementById('slowdown-btn');
         if (slowDownBtn) {
@@ -302,24 +355,10 @@ class Game {
             });
         }
 
-        // Управление ником в лидерборде
-        const lbRerollBtn = document.getElementById('leaderboard-reroll-btn');
-        if (lbRerollBtn) {
-            lbRerollBtn.addEventListener('click', async (e) => {
-                e.preventDefault();
-                try {
-                    await this.playerNameManager.rerollName();
-                    this.playerNameManager.markHintSeen();
-                    this.refreshLeaderboard('reroll');
-                } catch (err) {
-                    // ignore
-                }
-            });
-        }
-
-        const lbEditBtn = document.getElementById('leaderboard-edit-btn');
-        if (lbEditBtn) {
-            lbEditBtn.addEventListener('click', async (e) => {
+        // Клик по строке «You» в лидерборде — редактирование имени
+        const lbMe = document.getElementById('leaderboard-me');
+        if (lbMe) {
+            lbMe.addEventListener('click', async (e) => {
                 e.preventDefault();
                 const current = this.playerNameManager.getCurrentName() || '';
                 const next = window.prompt('Enter your name', current);
@@ -549,7 +588,10 @@ class Game {
             timer: this.timer,
             perks: this.perks,
             streak: this.perks?.getStreakPoints ? this.perks.getStreakPoints() : (this.perks?.streakPoints || 0),
-            streakPoints: this.perks.getStreakPoints ? this.perks.getStreakPoints() : (this.perks.streakPoints || 0),
+            streakPoints: this.perks.getStreakPoints ? this.perks.getStreakPoints() : (this.perks?.streakPoints || 0),
+            slowSpellCount: this.perks?.slowSpellCount ?? 1,
+            shieldSpellCount: this.perks?.shieldSpellCount ?? 1,
+            coins: this.perks?.coins ?? 0,
             score: this.score || 0,
             bestScore: this.bestScore,
             gameStatus: this.state,
@@ -682,7 +724,7 @@ class Game {
         // Проверка доступности Continue
         const canContinue = !!(this.perks && typeof this.perks.hasSecondLife === 'function' && this.perks.hasSecondLife());
         
-        this.renderer.showGameOverScreen(score, canContinue);
+        this.renderer.showGameOverScreen(score, this.bestScore, 0);
         eventBus.emit('DEATH');
         
         // Очистка снапшота
@@ -722,7 +764,7 @@ class Game {
         this.renderer.hidePauseScreen();
         
         // Показываем стартовый экран
-        this.renderer.showStartScreen();
+        this.renderer.showStartScreen(this.getGameState());
     }
 
     // Сохранение снапшота

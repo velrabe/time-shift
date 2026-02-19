@@ -2,10 +2,15 @@ class RendererUI {
     constructor() {
         this.leaderboardModal = document.getElementById('leaderboard-modal');
         this.leaderboardListEl = document.getElementById('leaderboard-list');
+        this.leaderboardTableBody = document.getElementById('leaderboard-table-body');
         this.leaderboardMeEl = document.getElementById('leaderboard-me');
         this.leaderboardCloseBtn = document.getElementById('leaderboard-close-btn');
 
         this._lastStreak = 0;
+        this._boundUpdateLeaderboardFade = this._updateLeaderboardFadeOverlays.bind(this);
+        if (this.leaderboardListEl && this.leaderboardTableBody) {
+            this.leaderboardListEl.addEventListener('scroll', this._boundUpdateLeaderboardFade, { passive: true });
+        }
         this._streakAnimTimeoutId = null;
     }
 
@@ -14,15 +19,16 @@ class RendererUI {
         const bestScoreEl = document.getElementById('best-score');
         const bestRankEl = document.getElementById('best-rank');
         const bestHintEl = document.getElementById('best-hint');
-        const streakFillEl = document.getElementById('streak-fill');
-        const streakTextEl = document.getElementById('streak-text');
         const streakProgressEl = document.getElementById('streak-progress');
+        const coinRushCounterEl = document.getElementById('coin-rush-counter');
+        const coinRushSegments = streakProgressEl?.querySelectorAll('.coin-rush-segment-fill') || [];
+        const coinRushButton = document.getElementById('coin-rush-button');
         const slowdownBtn = document.getElementById('slowdown-btn');
         const soundBtn = document.getElementById('sound-btn');
 
         const score = Math.floor(state?.score ?? 0);
         const best = Math.floor(state?.bestScore ?? 0);
-        const streak = Math.max(0, Math.min(50, Math.floor(state?.streakPoints ?? state?.dangerPassedStreak ?? 0)));
+        const streak = Math.max(0, Math.min(20, Math.floor(state?.streakPoints ?? state?.dangerPassedStreak ?? 0)));
         const rank = typeof state?.leaderboardRank === 'number' ? state.leaderboardRank : null;
 
         if (scoreValueEl) scoreValueEl.textContent = score;
@@ -31,57 +37,74 @@ class RendererUI {
             bestRankEl.textContent = rank && rank > 0 ? `#${rank}` : '#—';
         }
 
-        if (bestHintEl) {
-            const iconBox = bestHintEl.querySelector('.hud-chip-icon-large');
-            if (iconBox) {
-                const h = Math.round(iconBox.getBoundingClientRect().height || 0);
-                if (h > 0) {
-                    const px = `${h}px`;
-                    iconBox.style.width = px;
-                    iconBox.style.minWidth = px;
-                    iconBox.style.maxWidth = px;
-                    iconBox.style.flexBasis = px;
-                }
-            }
+        if (coinRushCounterEl) {
+            coinRushCounterEl.textContent = `${streak}/20`;
         }
-
-        if (streakFillEl) {
-            streakFillEl.style.width = `${(streak / 50) * 100}%`;
-            const fillRadius = Math.min(streak, 8);
-            streakFillEl.style.setProperty('--streak-fill-radius', `${fillRadius}px`);
-        }
-        if (streakTextEl) {
-            streakTextEl.textContent = `${streak}/50`;
-        }
+        coinRushSegments.forEach((fillEl, i) => {
+            const segmentStart = i * 10;
+            const segmentEnd = (i + 1) * 10;
+            const fillPct = streak <= segmentStart ? 0 : Math.min(100, ((streak - segmentStart) / 10) * 100);
+            if (fillEl) fillEl.style.width = `${fillPct}%`;
+        });
 
         if (streakProgressEl) {
             const prev = this._lastStreak ?? 0;
-            if (streak > prev) {
-                streakProgressEl.classList.remove('streak-loss');
-                streakProgressEl.classList.add('streak-hit');
+            if (streak >= 20) {
+                streakProgressEl.classList.add('coin-rush-filled');
+                if (prev < 20) {
+                    if (this._streakAnimTimeoutId) window.clearTimeout(this._streakAnimTimeoutId);
+                    this._streakAnimTimeoutId = window.setTimeout(() => {
+                        streakProgressEl.classList.add('coin-rush-ready');
+                        if (coinRushButton) coinRushButton.classList.remove('hidden');
+                    }, 400);
+                }
+            } else {
+                streakProgressEl.classList.remove('coin-rush-filled', 'coin-rush-ready');
+                if (coinRushButton) coinRushButton.classList.add('hidden');
                 if (this._streakAnimTimeoutId) {
                     window.clearTimeout(this._streakAnimTimeoutId);
+                    this._streakAnimTimeoutId = null;
                 }
-                this._streakAnimTimeoutId = window.setTimeout(() => {
-                    streakProgressEl.classList.remove('streak-hit');
-                }, 220);
-            } else if (streak < prev) {
-                streakProgressEl.classList.remove('streak-hit');
-                streakProgressEl.classList.add('streak-loss');
-                if (this._streakAnimTimeoutId) {
-                    window.clearTimeout(this._streakAnimTimeoutId);
-                }
-                this._streakAnimTimeoutId = window.setTimeout(() => {
-                    streakProgressEl.classList.remove('streak-loss');
-                }, 280);
             }
             this._lastStreak = streak;
         }
 
+        const slowSpellCount = Math.max(0, state?.slowSpellCount ?? 1);
+        const shieldSpellCount = Math.max(0, state?.shieldSpellCount ?? 1);
+
         if (slowdownBtn) {
-            const canUse = state?.gameStatus === 'RUNNING' && streak >= 10;
+            const canUse = state?.gameStatus === 'RUNNING' && streak >= 10 && slowSpellCount > 0;
             slowdownBtn.disabled = !canUse;
             slowdownBtn.classList.toggle('ready', canUse);
+        }
+
+        const slowWrap = document.getElementById('slow-btn-wrap');
+        const shieldWrap = document.getElementById('shield-btn-wrap');
+        const shieldBtn = document.getElementById('shield-btn');
+        const slowCountEl = slowWrap?.querySelector('.action-spell-count');
+        const shieldCountEl = shieldWrap?.querySelector('.action-spell-count');
+
+        if (slowWrap) {
+            slowWrap.classList.toggle('depleted', slowSpellCount <= 0);
+        }
+        if (shieldWrap) {
+            shieldWrap.classList.toggle('depleted', shieldSpellCount <= 0);
+        }
+        if (slowCountEl) {
+            slowCountEl.textContent = `x${slowSpellCount}`;
+            slowCountEl.dataset.count = String(slowSpellCount);
+        }
+        if (shieldCountEl) {
+            shieldCountEl.textContent = `x${shieldSpellCount}`;
+            shieldCountEl.dataset.count = String(shieldSpellCount);
+        }
+        if (shieldBtn) {
+            shieldBtn.disabled = !(state?.gameStatus === 'RUNNING' && shieldSpellCount > 0);
+        }
+
+        const perksCoinsEl = document.getElementById('perks-coins-count');
+        if (perksCoinsEl) {
+            perksCoinsEl.textContent = Math.max(0, state?.coins ?? 0);
         }
 
         if (soundBtn) {
@@ -90,6 +113,15 @@ class RendererUI {
                 icon.src = state?.soundMuted ? 'img/ui/sound-off.svg' : 'img/ui/sound-on.svg';
             }
             soundBtn.classList.toggle('is-muted', !!state?.soundMuted);
+        }
+
+        const pauseSoundIcon = document.getElementById('pause-sound-icon');
+        const pauseSoundText = document.getElementById('pause-sound-text');
+        if (pauseSoundIcon) {
+            pauseSoundIcon.src = state?.soundMuted ? 'img/ui/sound-off.svg' : 'img/ui/sound-on.svg';
+        }
+        if (pauseSoundText) {
+            pauseSoundText.textContent = state?.soundMuted ? 'SOUND: OFF' : 'SOUND: ON';
         }
     }
 
@@ -100,7 +132,23 @@ class RendererUI {
 
     hidePauseScreen() {
         const pauseScreen = document.getElementById('pause-screen');
+        const languageScreen = document.getElementById('language-screen');
         if (pauseScreen) pauseScreen.classList.add('hidden');
+        if (languageScreen) languageScreen.classList.add('hidden');
+    }
+
+    showLanguageScreen() {
+        const pauseScreen = document.getElementById('pause-screen');
+        const languageScreen = document.getElementById('language-screen');
+        if (pauseScreen) pauseScreen.classList.add('hidden');
+        if (languageScreen) languageScreen.classList.remove('hidden');
+    }
+
+    hideLanguageScreen() {
+        const pauseScreen = document.getElementById('pause-screen');
+        const languageScreen = document.getElementById('language-screen');
+        if (languageScreen) languageScreen.classList.add('hidden');
+        if (pauseScreen) pauseScreen.classList.remove('hidden');
     }
 
     isLeaderboardModalOpen() {
@@ -110,6 +158,18 @@ class RendererUI {
     showLeaderboardModal() {
         if (!this.leaderboardModal) return;
         this.leaderboardModal.classList.remove('hidden');
+        requestAnimationFrame(() => this._updateLeaderboardFadeOverlays());
+    }
+
+    _updateLeaderboardFadeOverlays() {
+        const body = this.leaderboardTableBody;
+        const list = this.leaderboardListEl;
+        if (!body || !list) return;
+        const { scrollTop, clientHeight, scrollHeight } = list;
+        const atTop = scrollTop <= 0;
+        const atBottom = scrollHeight <= clientHeight || scrollTop + clientHeight >= scrollHeight - 1;
+        body.classList.toggle('scrolled-from-top', !atTop);
+        body.classList.toggle('scrolled-to-bottom', atBottom);
     }
 
     hideLeaderboardModal() {
@@ -154,7 +214,24 @@ class RendererUI {
         const cName = document.createElement('div');
         cName.className = 'lb-col lb-col--name';
         cName.setAttribute('role', 'cell');
-        cName.textContent = String(name || '');
+        if (isMe) {
+            cName.innerHTML = '';
+            const nameSpan = document.createElement('span');
+            nameSpan.textContent = String(name || '');
+            const youSpan = document.createElement('span');
+            youSpan.className = 'lb-you';
+            youSpan.textContent = ' (You)';
+            const penImg = document.createElement('img');
+            penImg.src = 'img/ui/pen.svg';
+            penImg.alt = '';
+            penImg.className = 'lb-pen-icon';
+            penImg.setAttribute('aria-hidden', 'true');
+            cName.appendChild(nameSpan);
+            cName.appendChild(youSpan);
+            cName.appendChild(penImg);
+        } else {
+            cName.textContent = String(name || '');
+        }
 
         const cScore = document.createElement('div');
         cScore.className = 'lb-col lb-col--score';
@@ -210,26 +287,19 @@ class RendererUI {
             this.leaderboardMeEl.appendChild(msg);
         }
 
-        const hintEl = document.getElementById('leaderboard-name-hint');
-        if (hintEl) {
-            if (!nameHintSeen) {
-                hintEl.textContent = 'We gave you a name. You can change it anytime.';
-            } else if (overrideName) {
-                hintEl.textContent = `Your name is ${overrideName}. You can change it anytime.`;
-            } else {
-                hintEl.textContent = 'You can change your name anytime.';
-            }
-        }
+        requestAnimationFrame(() => this._updateLeaderboardFadeOverlays());
     }
 
-    showGameOverScreen(score, canContinue) {
+    showGameOverScreen(score, bestScore = 0, coins = 0) {
         const gameOverScreen = document.getElementById('game-over-screen');
         const finalScoreEl = document.getElementById('final-score');
-        const continueBtn = document.getElementById('continue-btn');
+        const finalBestScoreEl = document.getElementById('final-best-score');
+        const finalCoinsEl = document.getElementById('final-coins');
 
         if (gameOverScreen) gameOverScreen.classList.remove('hidden');
-        if (finalScoreEl) finalScoreEl.textContent = `Score: ${Math.floor(score)}`;
-        if (continueBtn) continueBtn.disabled = !canContinue;
+        if (finalScoreEl) finalScoreEl.textContent = Math.floor(score);
+        if (finalBestScoreEl) finalBestScoreEl.textContent = Math.floor(bestScore);
+        if (finalCoinsEl) finalCoinsEl.textContent = Math.floor(coins);
     }
 
     hideGameOverScreen() {
@@ -260,6 +330,21 @@ class RendererUI {
     showStartScreen() {
         const startScreen = document.getElementById('start-screen');
         if (startScreen) startScreen.classList.remove('hidden');
+    }
+
+    updateStartGameScreen(state) {
+        const coinsEl = document.getElementById('start-game-coins-count');
+        const slowCountEl = document.getElementById('start-slow-count');
+        const shieldCountEl = document.getElementById('start-shield-count');
+        const buySlowBtn = document.querySelector('.start-buy-btn[data-spell="slow"]');
+        const buyShieldBtn = document.querySelector('.start-buy-btn[data-spell="shield"]');
+        const coins = Math.max(0, state?.coins ?? 0);
+
+        if (coinsEl) coinsEl.textContent = coins;
+        if (slowCountEl) slowCountEl.textContent = Math.max(0, state?.slowSpellCount ?? 1);
+        if (shieldCountEl) shieldCountEl.textContent = Math.max(0, state?.shieldSpellCount ?? 1);
+        if (buySlowBtn) buySlowBtn.disabled = coins < 10;
+        if (buyShieldBtn) buyShieldBtn.disabled = coins < 5;
     }
 
     hideStartScreen() {

@@ -706,8 +706,8 @@ class Renderer {
     }
 
     // Показ экрана Game Over
-    showGameOverScreen(score, canContinue) {
-        this.ui.showGameOverScreen(score, canContinue);
+    showGameOverScreen(score, bestScore = 0, coins = 0) {
+        this.ui.showGameOverScreen(score, bestScore, coins);
     }
 
     // Скрытие экрана Game Over
@@ -721,8 +721,9 @@ class Renderer {
     }
 
     // Показ стартового экрана
-    showStartScreen() {
+    showStartScreen(state) {
         this.ui.showStartScreen();
+        if (state) this.ui.updateStartGameScreen(state);
     }
 
     // Скрытие стартового экрана

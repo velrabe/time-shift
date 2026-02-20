@@ -465,6 +465,23 @@ body {
     pointer-events: none;
 }
 
+.coin-rush-button.coin-rush-active {
+    opacity: 1;
+    pointer-events: none;
+    animation: coinRushPulse 1.2s ease-in-out infinite;
+}
+
+@keyframes coinRushPulse {
+    0%, 100% {
+        transform: translate(-50%, -50%) scale(0.85);
+        opacity: 0.9;
+    }
+    50% {
+        transform: translate(-50%, -50%) scale(1.0);
+        opacity: 1;
+    }
+}
+
 .coin-rush-button-inner {
     display: flex;
     flex-direction: row;

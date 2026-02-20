@@ -60,21 +60,21 @@ class RendererUI {
 
         if (streakProgressEl) {
             const prev = this._lastStreak ?? 0;
-            if (rushReady) {
-                streakProgressEl.classList.add('coin-rush-filled');
-                if (prev < rushTarget) {
-                    if (this._streakAnimTimeoutId) window.clearTimeout(this._streakAnimTimeoutId);
-                    this._streakAnimTimeoutId = window.setTimeout(() => {
-                        streakProgressEl.classList.add('coin-rush-ready');
-                        if (coinRushButton) coinRushButton.classList.remove('hidden');
-                    }, 400);
+            // Кнопка показывается только во время активного Coin Rush
+            if (state?.coinRushActive) {
+                if (coinRushButton) {
+                    coinRushButton.classList.remove('hidden');
+                    coinRushButton.classList.add('coin-rush-active');
                 }
+                streakProgressEl.classList.add('coin-rush-filled');
             } else {
+                if (coinRushButton) {
+                    coinRushButton.classList.add('hidden');
+                    coinRushButton.classList.remove('coin-rush-active');
+                }
                 streakProgressEl.classList.remove('coin-rush-filled', 'coin-rush-ready');
-                if (coinRushButton) coinRushButton.classList.add('hidden');
-                if (this._streakAnimTimeoutId) {
-                    window.clearTimeout(this._streakAnimTimeoutId);
-                    this._streakAnimTimeoutId = null;
+                if (rushReady) {
+                    streakProgressEl.classList.add('coin-rush-ready');
                 }
             }
             this._lastStreak = rushProgress;

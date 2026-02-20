@@ -174,6 +174,10 @@ class Game {
             // Прогресс Coin Rush: 10 -> 20 -> 30 ... за один ран
             if (!this.coinRushActive) {
                 this.coinRushProgress += 5;
+                // Автоматическая активация Coin Rush при достижении цели
+                if (this.coinRushProgress >= this.coinRushTarget) {
+                    this.activateCoinRush();
+                }
             }
 
             // Бонус Coin Income: +N монет за каждые 10 очков
@@ -231,12 +235,6 @@ class Game {
                 // Удержание: открылся рот (дальше закроется по keyup или автозакрытию через 2s)
                 this.renderer?.startBiteHold?.();
                 return;
-            }
-
-            if (key === 'Shift') {
-                if (e.repeat) return;
-                e.preventDefault();
-                this.activateCoinRush();
             }
         });
 
@@ -340,10 +338,7 @@ class Game {
             slowDownBtn.addEventListener('click', () => this.useSlowDown());
         }
 
-        const coinRushBtn = document.getElementById('coin-rush-button');
-        if (coinRushBtn) {
-            coinRushBtn.addEventListener('click', () => this.activateCoinRush());
-        }
+        // Кнопка Coin Rush теперь только визуальный индикатор (активация автоматическая)
 
         const shieldBtn = document.getElementById('shield-btn');
         if (shieldBtn) {

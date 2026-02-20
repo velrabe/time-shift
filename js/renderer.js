@@ -23,8 +23,7 @@ class Renderer {
         
         this._mouthHoldMaxMs = 2000;
         
-        // Food sprites for strip circles (single type)
-        // NOTE: browser can't list /img, so we keep an explicit list.
+        // Набор "баз" для разнообразия еды на ленте (стабильный выбор по value).
         this.foodBases = ['f1', 'f2', 'f3', 'f4', 'f5'];
 
         this.stripConveyor = new StripConveyorSystem({
@@ -254,6 +253,44 @@ class Renderer {
         return `img/${base}-s.png`;
     }
 
+    getFoodSrcCandidates(base) {
+        if (!base) return [];
+        return [
+            `img/${base}-s.png`,
+            `img/${base}.png`,
+            `img/food/${base}-s.png`,
+            `img/food/${base}.png`,
+            `img/${base}.webp`,
+            `img/${base}.svg`
+        ];
+    }
+
+    getFallbackFoodSvg(base) {
+        const palette = {
+            f1: ['#ffb347', '#ff8c42'],
+            f2: ['#7dd56f', '#34a853'],
+            f3: ['#8ec5ff', '#4d8dff'],
+            f4: ['#ffd36e', '#ffb020'],
+            f5: ['#caa6ff', '#8e66ff']
+        };
+        const [c1, c2] = palette[base] || palette.f1;
+        const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="160" height="160" viewBox="0 0 160 160"><defs><radialGradient id="g" cx="35%" cy="30%" r="70%"><stop offset="0%" stop-color="${c1}"/><stop offset="100%" stop-color="${c2}"/></radialGradient></defs><circle cx="80" cy="80" r="62" fill="url(#g)"/><circle cx="58" cy="58" r="12" fill="rgba(255,255,255,0.35)"/></svg>`;
+        return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+    }
+
+    getItemTypeForValue(value) {
+        // Во время Coin Rush все объекты превращаются в монеты.
+        if (window.gameInstance?.isCoinRushActive?.()) return 'coin';
+        // В обычном режиме редкие монетки в потоке.
+        const v = Math.max(0, Number(value) || 0);
+        return (v % 7 === 0) ? 'coin' : 'food';
+    }
+
+    getItemSrc(itemType, base) {
+        if (itemType === 'coin') return 'img/ui/coin.svg';
+        return this.getFoodSrc(base);
+    }
+
     ensureFoodCircle(circleEl) {
         if (!circleEl) return;
         let img = circleEl.querySelector('img.food-img');
@@ -269,14 +306,35 @@ class Renderer {
             img.addEventListener('load', () => {
                 this.updateFoodContainerSize(circleEl, img);
             });
+            img.addEventListener('error', () => {
+                const itemType = circleEl?.dataset?.itemType || 'food';
+                if (itemType !== 'food') return;
+                const base = circleEl?.dataset?.foodBase || 'f1';
+                const candidates = this.getFoodSrcCandidates(base);
+                const idx = Math.max(0, Number(circleEl.dataset.foodSrcIdx || 0));
+                const nextIdx = idx + 1;
+                if (nextIdx < candidates.length) {
+                    circleEl.dataset.foodSrcIdx = String(nextIdx);
+                    img.src = candidates[nextIdx];
+                    return;
+                }
+                img.src = this.getFallbackFoodSvg(base);
+            });
             circleEl.appendChild(img);
         }
 
         const value = parseInt(circleEl.dataset.value);
         const base = circleEl.dataset.foodBase || this.getFoodBaseForValue(value) || 'f1';
+        const itemType = this.getItemTypeForValue(value);
         circleEl.dataset.foodBase = base;
-
-        img.src = this.getFoodSrc(base);
+        circleEl.dataset.itemType = itemType;
+        if (itemType === 'food') {
+            circleEl.dataset.foodSrcIdx = '0';
+            const candidates = this.getFoodSrcCandidates(base);
+            img.src = candidates[0] || this.getFallbackFoodSvg(base);
+        } else {
+            img.src = this.getItemSrc(itemType, base);
+        }
         
         // Если изображение уже загружено, обновляем размер сразу
         if (img.complete && img.naturalWidth > 0) {
@@ -295,10 +353,11 @@ class Renderer {
         // Один глобальный коэффициент масштаба для ВСЕХ еды, чтобы относительные размеры совпадали с оригиналом.
         // Подобрано по median высоты f*-s (169,154,149,257,217,137) => 161.5.
         const baseUnit = parseFloat(getComputedStyle(circleEl).getPropertyValue('--circle-size')) || 63;
-        const baselineSmallHeight = 161.5;
+        const isCoin = circleEl?.dataset?.itemType === 'coin';
+        const baselineSmallHeight = isCoin ? 64 : 161.5;
         // Глобальный масштаб подгоняет всё под circle-size; дополнительный
         // коэффициент 0.5 уменьшает ВСЕ объекты на ленте в 2 раза.
-        const globalScale = (baseUnit / baselineSmallHeight) * 0.5;
+        const globalScale = (baseUnit / baselineSmallHeight) * (isCoin ? 0.72 : 0.5);
 
         const targetWidth = naturalWidth * globalScale;
         const targetHeight = naturalHeight * globalScale;
@@ -671,6 +730,12 @@ class Renderer {
     // Рендер ленты чисел
     renderNumberStrip(timer) {
         this.stripConveyor.renderNumberStrip(timer);
+    }
+
+    refreshVisibleItemTypes() {
+        const circles = this.numberStrip?.querySelectorAll?.('.number-circle');
+        if (!circles || circles.length === 0) return;
+        circles.forEach((circle) => this.ensureFoodCircle(circle));
     }
     
     // Обновление UI

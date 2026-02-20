@@ -12,6 +12,11 @@ class RendererUI {
             this.leaderboardListEl.addEventListener('scroll', this._boundUpdateLeaderboardFade, { passive: true });
         }
         this._streakAnimTimeoutId = null;
+        this.perksModal = document.getElementById('perks-modal');
+        this.perksGrid = document.getElementById('perks-grid');
+        this.perksCloseBtn = document.getElementById('perks-close-btn');
+        this._perksBoundClose = null;
+        this._perksBoundUpgrade = null;
     }
 
     updateUI(state) {
@@ -28,8 +33,12 @@ class RendererUI {
 
         const score = Math.floor(state?.score ?? 0);
         const best = Math.floor(state?.bestScore ?? 0);
-        const streak = Math.max(0, Math.min(20, Math.floor(state?.streakPoints ?? state?.dangerPassedStreak ?? 0)));
+        const rushProgress = Math.max(0, Math.floor(state?.coinRushProgress ?? state?.streakPoints ?? 0));
+        const rushTarget = Math.max(10, Math.floor(state?.coinRushTarget ?? 20));
+        const rushReady = rushProgress >= rushTarget && !state?.coinRushActive;
         const rank = typeof state?.leaderboardRank === 'number' ? state.leaderboardRank : null;
+        const slowCooldownSec = Math.ceil(Math.max(0, state?.slowCooldownRemainingMs || 0) / 1000);
+        const shieldCooldownSec = Math.ceil(Math.max(0, state?.shieldCooldownRemainingMs || 0) / 1000);
 
         if (scoreValueEl) scoreValueEl.textContent = score;
         if (bestScoreEl) bestScoreEl.textContent = best;
@@ -38,20 +47,22 @@ class RendererUI {
         }
 
         if (coinRushCounterEl) {
-            coinRushCounterEl.textContent = `${streak}/20`;
+            coinRushCounterEl.textContent = state?.coinRushActive ? 'RUSH!' : `${rushProgress}/${rushTarget}`;
         }
+        const segmentCount = Math.max(1, coinRushSegments.length || 1);
+        const ratio = Math.max(0, Math.min(1, rushTarget > 0 ? (rushProgress / rushTarget) : 0));
         coinRushSegments.forEach((fillEl, i) => {
-            const segmentStart = i * 10;
-            const segmentEnd = (i + 1) * 10;
-            const fillPct = streak <= segmentStart ? 0 : Math.min(100, ((streak - segmentStart) / 10) * 100);
-            if (fillEl) fillEl.style.width = `${fillPct}%`;
+            const segmentStart = i / segmentCount;
+            const segmentEnd = (i + 1) / segmentCount;
+            const local = ratio <= segmentStart ? 0 : Math.min(1, (ratio - segmentStart) / Math.max(0.0001, (segmentEnd - segmentStart)));
+            if (fillEl) fillEl.style.width = `${(local * 100).toFixed(2)}%`;
         });
 
         if (streakProgressEl) {
             const prev = this._lastStreak ?? 0;
-            if (streak >= 20) {
+            if (rushReady) {
                 streakProgressEl.classList.add('coin-rush-filled');
-                if (prev < 20) {
+                if (prev < rushTarget) {
                     if (this._streakAnimTimeoutId) window.clearTimeout(this._streakAnimTimeoutId);
                     this._streakAnimTimeoutId = window.setTimeout(() => {
                         streakProgressEl.classList.add('coin-rush-ready');
@@ -66,16 +77,17 @@ class RendererUI {
                     this._streakAnimTimeoutId = null;
                 }
             }
-            this._lastStreak = streak;
+            this._lastStreak = rushProgress;
         }
 
         const slowSpellCount = Math.max(0, state?.slowSpellCount ?? 1);
         const shieldSpellCount = Math.max(0, state?.shieldSpellCount ?? 1);
 
         if (slowdownBtn) {
-            const canUse = state?.gameStatus === 'RUNNING' && streak >= 10 && slowSpellCount > 0;
+            const canUse = state?.gameStatus === 'RUNNING' && slowSpellCount > 0 && slowCooldownSec <= 0;
             slowdownBtn.disabled = !canUse;
             slowdownBtn.classList.toggle('ready', canUse);
+            slowdownBtn.title = slowCooldownSec > 0 ? `Slow cooldown: ${slowCooldownSec}s` : 'Slow time';
         }
 
         const slowWrap = document.getElementById('slow-btn-wrap');
@@ -99,7 +111,12 @@ class RendererUI {
             shieldCountEl.dataset.count = String(shieldSpellCount);
         }
         if (shieldBtn) {
-            shieldBtn.disabled = !(state?.gameStatus === 'RUNNING' && shieldSpellCount > 0);
+            const canUseShield = state?.gameStatus === 'RUNNING' && shieldSpellCount > 0 && !state?.shieldActive && shieldCooldownSec <= 0;
+            shieldBtn.disabled = !canUseShield;
+            shieldBtn.classList.toggle('ready', canUseShield);
+            shieldBtn.title = state?.shieldActive
+                ? `Shield active (${Math.max(0, state?.shieldHitsRemaining || 0)} hit left)`
+                : (shieldCooldownSec > 0 ? `Shield cooldown: ${shieldCooldownSec}s` : 'Shield');
         }
 
         const perksCoinsEl = document.getElementById('perks-coins-count');
@@ -175,6 +192,71 @@ class RendererUI {
     hideLeaderboardModal() {
         if (!this.leaderboardModal) return;
         this.leaderboardModal.classList.add('hidden');
+    }
+
+    isPerksModalOpen() {
+        return !!(this.perksModal && !this.perksModal.classList.contains('hidden'));
+    }
+
+    showPerksModal() {
+        if (!this.perksModal) return;
+        this.perksModal.classList.remove('hidden');
+    }
+
+    hidePerksModal() {
+        if (!this.perksModal) return;
+        this.perksModal.classList.add('hidden');
+    }
+
+    bindPerksModalActions({ onClose, onUpgrade } = {}) {
+        if (this._perksBoundClose && this.perksCloseBtn) {
+            this.perksCloseBtn.removeEventListener('click', this._perksBoundClose);
+        }
+        this._perksBoundClose = () => onClose?.();
+        this.perksCloseBtn?.addEventListener('click', this._perksBoundClose);
+
+        if (this._perksBoundUpgrade && this.perksGrid) {
+            this.perksGrid.removeEventListener('click', this._perksBoundUpgrade);
+        }
+        this._perksBoundUpgrade = (e) => {
+            const btn = e.target?.closest?.('.perks-upgrade-btn');
+            if (!btn) return;
+            const perkId = btn.dataset?.perkId;
+            if (!perkId) return;
+            onUpgrade?.(perkId);
+        };
+        this.perksGrid?.addEventListener('click', this._perksBoundUpgrade);
+    }
+
+    renderPerksModal(state, catalog) {
+        if (!this.perksGrid) return;
+        const coins = Math.max(0, state?.coins ?? 0);
+        const coinsEl = document.getElementById('perks-modal-coins');
+        if (coinsEl) coinsEl.textContent = String(coins);
+
+        const perks = state?.perks;
+        const items = Object.values(catalog || {}).sort((a, b) => a.tier - b.tier);
+        this.perksGrid.innerHTML = '';
+
+        items.forEach((cfg) => {
+            const level = perks?.getPerkLevel?.(cfg.id) || 0;
+            const maxLevel = cfg.maxLevel || 1;
+            const unlocked = perks?.isPerkUnlocked?.(cfg.id) || false;
+            const nextCost = perks?.getPerkNextCost?.(cfg.id);
+            const canUpgrade = perks?.canUpgradePerk?.(cfg.id) || false;
+
+            const card = document.createElement('div');
+            card.className = `perks-card${unlocked ? '' : ' is-locked'}`;
+            card.innerHTML = `
+                <div class="perks-card-tier">Tier ${cfg.tier}</div>
+                <div class="perks-card-title">${cfg.title}</div>
+                <div class="perks-card-level">${level}/${maxLevel}</div>
+                <button class="perks-upgrade-btn" data-perk-id="${cfg.id}" ${canUpgrade ? '' : 'disabled'}>
+                    ${level >= maxLevel ? 'MAX' : `BUY ${Number.isFinite(nextCost) ? nextCost : '-'}`}
+                </button>
+            `;
+            this.perksGrid.appendChild(card);
+        });
     }
 
     _lbGetName(p) {
@@ -343,8 +425,19 @@ class RendererUI {
         if (coinsEl) coinsEl.textContent = coins;
         if (slowCountEl) slowCountEl.textContent = Math.max(0, state?.slowSpellCount ?? 1);
         if (shieldCountEl) shieldCountEl.textContent = Math.max(0, state?.shieldSpellCount ?? 1);
-        if (buySlowBtn) buySlowBtn.disabled = coins < 10;
-        if (buyShieldBtn) buyShieldBtn.disabled = coins < 5;
+        const slowCost = Math.max(0, state?.spellShopCosts?.slow ?? 10);
+        const shieldCost = Math.max(0, state?.spellShopCosts?.shield ?? 5);
+
+        if (buySlowBtn) {
+            buySlowBtn.disabled = coins < slowCost;
+            const priceEl = buySlowBtn.querySelector('span[data-price]');
+            if (priceEl) priceEl.textContent = String(slowCost);
+        }
+        if (buyShieldBtn) {
+            buyShieldBtn.disabled = coins < shieldCost;
+            const priceEl = buyShieldBtn.querySelector('span[data-price]');
+            if (priceEl) priceEl.textContent = String(shieldCost);
+        }
     }
 
     hideStartScreen() {

@@ -2,6 +2,7 @@
 class StorageSystem {
     constructor() {
         this.SNAPSHOT_KEY = 'timeshift_snapshot';
+        this.PROGRESSION_KEY = 'timeshift_progression_v2';
         this.SETTINGS_KEY = 'timeshift_settings';
     }
 
@@ -31,6 +32,33 @@ class StorageSystem {
             localStorage.removeItem(this.SNAPSHOT_KEY);
         } catch (e) {
             console.warn('Failed to clear snapshot:', e);
+        }
+    }
+
+    saveProgression(progression) {
+        try {
+            localStorage.setItem(this.PROGRESSION_KEY, JSON.stringify(progression));
+        } catch (e) {
+            console.warn('Failed to save progression:', e);
+        }
+    }
+
+    loadProgression() {
+        try {
+            const data = localStorage.getItem(this.PROGRESSION_KEY);
+            if (!data) return null;
+            return JSON.parse(data);
+        } catch (e) {
+            console.warn('Failed to load progression:', e);
+            return null;
+        }
+    }
+
+    clearProgression() {
+        try {
+            localStorage.removeItem(this.PROGRESSION_KEY);
+        } catch (e) {
+            console.warn('Failed to clear progression:', e);
         }
     }
 
@@ -73,6 +101,11 @@ class StorageSystem {
             localStorage.removeItem(this.SNAPSHOT_KEY);
         } catch (e) {
             console.warn('Failed to clear snapshot:', e);
+        }
+        try {
+            localStorage.removeItem(this.PROGRESSION_KEY);
+        } catch (e) {
+            console.warn('Failed to clear progression:', e);
         }
         try {
             localStorage.removeItem(this.SETTINGS_KEY);

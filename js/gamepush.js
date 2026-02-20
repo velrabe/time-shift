@@ -111,6 +111,8 @@ class GamePushSystem {
         try {
             this.gp.player.set('snapshot', JSON.stringify(snapshot));
             await this.gp.player.sync();
+            if (!this.playerData) this.playerData = {};
+            this.playerData.snapshot = JSON.stringify(snapshot);
         } catch (e) {
             console.warn('Failed to save snapshot to GamePush:', e);
         }
@@ -134,6 +136,42 @@ class GamePushSystem {
         const currentBest = this.getBestScore();
         if (snapshotScore > currentBest) {
             await this.saveBestScore(snapshotScore);
+        }
+    }
+
+    getProgression() {
+        if (!this.ready || !this.playerData) return null;
+        try {
+            const raw = this.playerData.progression_v2 || this.playerData.progression || null;
+            return raw ? JSON.parse(raw) : null;
+        } catch (e) {
+            console.warn('Failed to parse progression from GamePush:', e);
+            return null;
+        }
+    }
+
+    async saveProgression(progression) {
+        if (!this.ready || !this.gp || !this.gp.player) return;
+        try {
+            const data = JSON.stringify(progression);
+            this.gp.player.set('progression_v2', data);
+            await this.gp.player.sync();
+            if (!this.playerData) this.playerData = {};
+            this.playerData.progression_v2 = data;
+        } catch (e) {
+            console.warn('Failed to save progression to GamePush:', e);
+        }
+    }
+
+    async clearProgression() {
+        if (!this.ready || !this.gp || !this.gp.player) return;
+        try {
+            this.gp.player.set('progression_v2', null);
+            await this.gp.player.sync();
+            if (!this.playerData) this.playerData = {};
+            this.playerData.progression_v2 = null;
+        } catch (e) {
+            console.warn('Failed to clear progression in GamePush:', e);
         }
     }
 

@@ -14,6 +14,9 @@ class Game {
         this.soundMuted = false;
         this.lastSnapshotTime = 0;
         this.snapshotInterval = 1000; // сохранять каждую секунду
+        this.cloudSnapshotSyncInterval = 15000;
+        this.lastCloudSnapshotSyncAt = 0;
+        this.progressionSyncDebounceTimer = null;
 
         // Leaderboard cache (top10 + player rating)
         this.leaderboardData = {
@@ -25,6 +28,7 @@ class Game {
         };
         this._leaderboardRefreshInFlight = null;
         this._pausedByLeaderboard = false;
+        this._pausedByPerks = false;
         this._pauseStartTime = null; // Время начала паузы для лидерборда
         
         this.animationFrameId = null;
@@ -47,6 +51,21 @@ class Game {
 
         // Счёт: количество съеденных объектов за текущий забег
         this.score = 0;
+        this.runCoinsEarned = 0;
+        this.slowCooldownBaseMs = 30000;
+        this.shieldCooldownBaseMs = 30000;
+        this.slowCooldownUntil = 0;
+        this.shieldCooldownUntil = 0;
+        this.shieldActive = false;
+        this.shieldHitsRemaining = 0;
+        this.shieldExpiresAt = 0;
+        this.shieldStartedBySlowSafety = false;
+        this.coinRushProgress = 0;
+        this.coinRushTarget = 10;
+        this.coinRushStep = 10;
+        this.coinRushDurationMs = 5000;
+        this.coinRushActive = false;
+        this.coinRushEndsAt = 0;
         
         this.setupEventListeners();
     }
@@ -66,10 +85,18 @@ class Game {
         const gpBestScore = this.gamePush.getBestScore();
         const localBestScore = this.storage.getLocalBestScore();
         this.bestScore = Math.max(gpBestScore, localBestScore);
-        
-        // Загрузка снапшота (если есть) - НЕ восстанавливаем автоматически
-        // Пользователь должен нажать PLAY для начала новой игры
-        // Снапшот можно использовать позже для функции "Continue"
+
+        const localProgression = this.storage.loadProgression();
+        const cloudProgression = this.gamePush.getProgression();
+        const mergedProgression = this.mergeProgression(localProgression, cloudProgression);
+        if (mergedProgression) {
+            this.perks.fromSnapshot(mergedProgression);
+            this.storage.saveProgression(this.perks.toSnapshot());
+            this.gamePush.saveProgression(this.perks.toSnapshot());
+        }
+
+        const snapshot = this.loadSnapshot();
+        this.restoreFromSnapshot(snapshot);
         
         // Убеждаемся, что состояние - MENU (не запущено)
         this.state = 'MENU';
@@ -85,6 +112,7 @@ class Game {
         
         // Обновление UI
         this.updateUI();
+        this.renderer?.ui?.updateStartGameScreen?.(this.getGameState());
 
         // Первичная загрузка лидерборда (топ10 + позиция игрока)
         this.refreshLeaderboard('init');
@@ -129,20 +157,31 @@ class Game {
         // Game over по физической коллизии (любой объект касается челюсти при закрытом рте)
         eventBus.on('PENGUIN_COLLISION', (_data) => {
             if (this.state !== 'RUNNING') return;
+            if (this.absorbHitWithShield()) {
+                this.updateUI();
+                return;
+            }
             this.beginDeath({ reason: 'PENGUIN_COLLISION' });
         });
 
         // Счёт и streak от реально съеденных объектов
-        eventBus.on('FOOD_EATEN', (data) => {
+        eventBus.on('FOOD_EATEN', () => {
             if (this.state !== 'RUNNING') return;
-            const value = Number.isFinite(data?.value) ? data.value : null;
 
-            // +1 очко за ЛЮБОЙ съеденный объект
-            this.score = (this.score || 0) + 1;
+            // +5 очков за съеденную еду
+            this.score = (this.score || 0) + 5;
 
-            // В новой механике streak = серия проглоченных объектов (+5 за укус)
-            if (this.perks && typeof this.perks.addStreak === 'function') {
-                this.perks.addStreak(5);
+            // Прогресс Coin Rush: 10 -> 20 -> 30 ... за один ран
+            if (!this.coinRushActive) {
+                this.coinRushProgress += 5;
+            }
+
+            // Бонус Coin Income: +N монет за каждые 10 очков
+            const incomeBonus = this.perks?.getCoinIncomeBonusPer10Score?.() || 0;
+            if (incomeBonus > 0 && this.score > 0 && this.score % 10 === 0) {
+                this.perks.addCoins(incomeBonus);
+                this.runCoinsEarned += incomeBonus;
+                this.persistProgressionSoon();
             }
 
             // При желании score/streak можно логировать для дебага
@@ -151,10 +190,25 @@ class Game {
             this.updateUI();
         });
 
+        eventBus.on('COIN_BITTEN', () => {
+            if (this.state !== 'RUNNING') return;
+            let amount = 1;
+            if (this.perks?.hasDoubleBite?.()) amount += 1;
+            this.perks.addCoins(amount);
+            this.runCoinsEarned += amount;
+            this.persistProgressionSoon();
+            this.updateUI();
+        });
+
         // Горячие клавиши
         document.addEventListener('keydown', (e) => {
             const key = e.key;
             if (key === 'Escape') {
+                if (this.renderer?.ui?.isPerksModalOpen?.()) {
+                    e.preventDefault();
+                    this.closePerksModal();
+                    return;
+                }
                 // Если открыта таблица лидеров — закрываем её и продолжаем игру
                 if (this.renderer?.isLeaderboardModalOpen?.()) {
                     e.preventDefault();
@@ -176,6 +230,13 @@ class Game {
                 e.preventDefault();
                 // Удержание: открылся рот (дальше закроется по keyup или автозакрытию через 2s)
                 this.renderer?.startBiteHold?.();
+                return;
+            }
+
+            if (key === 'Shift') {
+                if (e.repeat) return;
+                e.preventDefault();
+                this.activateCoinRush();
             }
         });
 
@@ -263,9 +324,11 @@ class Game {
                 e.stopPropagation();
                 const spell = btn.dataset?.spell;
                 if (spell === 'slow' && this.perks?.buySlow?.()) {
+                    this.persistProgressionSoon();
                     this.updateUI();
                     this.renderer?.ui?.updateStartGameScreen?.(this.getGameState());
                 } else if (spell === 'shield' && this.perks?.buyShield?.()) {
+                    this.persistProgressionSoon();
                     this.updateUI();
                     this.renderer?.ui?.updateStartGameScreen?.(this.getGameState());
                 }
@@ -275,6 +338,28 @@ class Game {
         const slowDownBtn = document.getElementById('slowdown-btn');
         if (slowDownBtn) {
             slowDownBtn.addEventListener('click', () => this.useSlowDown());
+        }
+
+        const coinRushBtn = document.getElementById('coin-rush-button');
+        if (coinRushBtn) {
+            coinRushBtn.addEventListener('click', () => this.activateCoinRush());
+        }
+
+        const shieldBtn = document.getElementById('shield-btn');
+        if (shieldBtn) {
+            shieldBtn.addEventListener('click', () => this.useShield());
+        }
+
+        const perksBtn = document.getElementById('perks-btn');
+        if (perksBtn) {
+            const open = (e) => {
+                e?.preventDefault?.();
+                this.openPerksModal();
+            };
+            perksBtn.addEventListener('click', open);
+            perksBtn.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') open(e);
+            });
         }
 
         const biteBtn = document.getElementById('bite-btn');
@@ -449,11 +534,23 @@ class Game {
 
             // Сбрасываем счёт забега
             this.score = 0;
+            this.runCoinsEarned = 0;
+            this.slowCooldownUntil = 0;
+            this.shieldCooldownUntil = 0;
+            this.shieldActive = false;
+            this.shieldHitsRemaining = 0;
+            this.shieldExpiresAt = 0;
+            this.shieldStartedBySlowSafety = false;
+            this.coinRushProgress = 0;
+            this.coinRushTarget = 10;
+            this.coinRushActive = false;
+            this.coinRushEndsAt = 0;
             this.updateUI();
 
             this.state = 'COUNTDOWN';
             this.timer.reset();
             this.perks.reset();
+            this.persistProgressionSoon();
             this.audio.reset();
 
         // ВАЖНО: при новой игре пересоздаем DOM-окно ленты,
@@ -515,6 +612,8 @@ class Game {
         
         // Проверка инверсии
         this.timer.checkInversion();
+        this.updateShieldStateByTime();
+        this.updateCoinRushStateByTime();
         
         const gameState = this.getGameState();
 
@@ -533,6 +632,10 @@ class Game {
         if (now - this.lastSnapshotTime >= this.snapshotInterval) {
             this.saveSnapshot();
             this.lastSnapshotTime = now;
+            if (now - this.lastCloudSnapshotSyncAt >= this.cloudSnapshotSyncInterval) {
+                this.gamePush.saveSnapshot(this.buildSnapshotPayload());
+                this.lastCloudSnapshotSyncAt = now;
+            }
         }
         
         // Следующий кадр
@@ -584,19 +687,30 @@ class Game {
 
     // Получение состояния игры
     getGameState() {
+        const now = Date.now();
+        const slowSpellCount = this.perks?.getSpellCount?.('slow') ?? this.perks?.slowSpellCount ?? 0;
+        const shieldSpellCount = this.perks?.getSpellCount?.('shield') ?? this.perks?.shieldSpellCount ?? 0;
         return {
             timer: this.timer,
             perks: this.perks,
-            streak: this.perks?.getStreakPoints ? this.perks.getStreakPoints() : (this.perks?.streakPoints || 0),
-            streakPoints: this.perks.getStreakPoints ? this.perks.getStreakPoints() : (this.perks?.streakPoints || 0),
-            slowSpellCount: this.perks?.slowSpellCount ?? 1,
-            shieldSpellCount: this.perks?.shieldSpellCount ?? 1,
+            streak: Math.max(0, this.coinRushProgress),
+            streakPoints: Math.max(0, this.coinRushProgress),
+            slowSpellCount,
+            shieldSpellCount,
             coins: this.perks?.coins ?? 0,
             score: this.score || 0,
             bestScore: this.bestScore,
             gameStatus: this.state,
             soundMuted: this.soundMuted,
-            leaderboardRank: this._getLeaderboardRankForHUD()
+            leaderboardRank: this._getLeaderboardRankForHUD(),
+            shieldActive: !!this.shieldActive,
+            shieldHitsRemaining: Math.max(0, this.shieldHitsRemaining || 0),
+            slowCooldownRemainingMs: Math.max(0, (this.slowCooldownUntil || 0) - now),
+            shieldCooldownRemainingMs: Math.max(0, (this.shieldCooldownUntil || 0) - now),
+            coinRushProgress: Math.max(0, this.coinRushProgress || 0),
+            coinRushTarget: Math.max(10, this.coinRushTarget || 10),
+            coinRushActive: !!this.coinRushActive,
+            spellShopCosts: { ...(this.perks?.spellShopCosts || { slow: 10, shield: 5 }) }
         };
     }
 
@@ -640,12 +754,110 @@ class Game {
     useSlowDown() {
         if (this.state !== 'RUNNING') return;
         if (!this.perks || typeof this.perks.useSlowDown !== 'function') return;
+        if (Date.now() < (this.slowCooldownUntil || 0)) return;
         const ok = this.perks.useSlowDown();
         if (!ok) return;
         if (this.timer && typeof this.timer.activateSlowDown === 'function') {
-            this.timer.activateSlowDown(10);
+            const durationSec = 10;
+            this.timer.activateSlowDown(durationSec);
+
+            const safetyMultiplier = this.perks?.getSlowSafetyMultiplier?.() || 0;
+            if (safetyMultiplier > 0) {
+                this.activateShield({ bySlowSafety: true, customDurationMs: durationSec * 1000 * safetyMultiplier, consumeSpell: false });
+            }
         }
+        const cdMultiplier = this.perks?.getSlowCooldownMultiplier?.() || 1;
+        this.slowCooldownUntil = Date.now() + Math.round(this.slowCooldownBaseMs * cdMultiplier);
+        this.persistProgressionSoon();
+        this.saveSnapshot();
         this.updateUI();
+    }
+
+    useShield() {
+        if (this.state !== 'RUNNING') return;
+        if (this.shieldActive) return;
+        if (Date.now() < (this.shieldCooldownUntil || 0)) return;
+        this.activateShield({ bySlowSafety: false, consumeSpell: true });
+        this.persistProgressionSoon();
+        this.saveSnapshot();
+        this.updateUI();
+    }
+
+    activateShield({ bySlowSafety = false, customDurationMs = 0, consumeSpell = true } = {}) {
+        if (consumeSpell) {
+            if (!this.perks?.canUseShield?.() || !this.perks.useShield()) return false;
+        }
+        this.shieldActive = true;
+        this.shieldStartedBySlowSafety = !!bySlowSafety;
+        this.shieldHitsRemaining = 1 + (this.perks?.getShieldExtraHits?.() || 0);
+        if (customDurationMs > 0) {
+            this.shieldExpiresAt = Date.now() + customDurationMs;
+        } else {
+            this.shieldExpiresAt = 0;
+        }
+        return true;
+    }
+
+    deactivateShield({ startCooldown = true } = {}) {
+        if (!this.shieldActive) return;
+        const shouldStartCooldown = startCooldown && !this.shieldStartedBySlowSafety;
+        this.shieldActive = false;
+        this.shieldStartedBySlowSafety = false;
+        this.shieldHitsRemaining = 0;
+        this.shieldExpiresAt = 0;
+        if (shouldStartCooldown) {
+            const mult = this.perks?.getShieldCooldownMultiplier?.() || 1;
+            this.shieldCooldownUntil = Date.now() + Math.round(this.shieldCooldownBaseMs * mult);
+        }
+    }
+
+    absorbHitWithShield() {
+        if (!this.shieldActive) return false;
+        this.shieldHitsRemaining = Math.max(0, (this.shieldHitsRemaining || 0) - 1);
+        if (this.shieldHitsRemaining <= 0) {
+            this.deactivateShield({ startCooldown: true });
+        }
+        // В collisionEngine на первом "смертельном" контакте ставится deathTriggered=true.
+        // Если удар поглощён щитом, нужно снять этот lock, иначе коллизии/поедание замирают.
+        this.renderer?.collisionEngine?.reset?.();
+        this.persistProgressionSoon();
+        this.saveSnapshot();
+        return true;
+    }
+
+    updateShieldStateByTime() {
+        if (!this.shieldActive) return;
+        if (this.shieldExpiresAt > 0 && Date.now() >= this.shieldExpiresAt) {
+            this.deactivateShield({ startCooldown: false });
+        }
+    }
+
+    activateCoinRush() {
+        if (this.state !== 'RUNNING') return false;
+        if (this.coinRushActive) return false;
+        if ((this.coinRushProgress || 0) < (this.coinRushTarget || 10)) return false;
+
+        this.coinRushActive = true;
+        this.coinRushEndsAt = Date.now() + this.coinRushDurationMs;
+        this.coinRushProgress = 0;
+        this.coinRushTarget = Math.max(10, (this.coinRushTarget || 10) + this.coinRushStep);
+        this.renderer?.refreshVisibleItemTypes?.();
+        this.updateUI();
+        this.saveSnapshot();
+        return true;
+    }
+
+    updateCoinRushStateByTime() {
+        if (!this.coinRushActive) return;
+        if (Date.now() < (this.coinRushEndsAt || 0)) return;
+        this.coinRushActive = false;
+        this.coinRushEndsAt = 0;
+        this.renderer?.refreshVisibleItemTypes?.();
+        this.updateUI();
+    }
+
+    isCoinRushActive() {
+        return !!this.coinRushActive;
     }
 
     // Пауза
@@ -664,6 +876,8 @@ class Game {
         }
         
         this.renderer.showPauseScreen();
+        this.saveSnapshot();
+        this.gamePush.saveSnapshot(this.buildSnapshotPayload());
         eventBus.emit('PAUSE');
     }
 
@@ -721,14 +935,12 @@ class Game {
             Promise.resolve(this.gamePush.saveBestScore(score)).then(() => this.refreshLeaderboard('bestScore'));
         }
         
-        // Проверка доступности Continue
-        const canContinue = !!(this.perks && typeof this.perks.hasSecondLife === 'function' && this.perks.hasSecondLife());
-        
-        this.renderer.showGameOverScreen(score, this.bestScore, 0);
+        this.renderer.showGameOverScreen(score, this.bestScore, this.runCoinsEarned || 0);
         eventBus.emit('DEATH');
         
         // Очистка снапшота
         this.storage.clearSnapshot();
+        this.gamePush.saveSnapshot(null);
     }
 
     // Продолжение после смерти
@@ -754,6 +966,17 @@ class Game {
         this.perks.reset();
         this.audio.reset();
         this.storage.clearSnapshot();
+        this.runCoinsEarned = 0;
+        this.slowCooldownUntil = 0;
+        this.shieldCooldownUntil = 0;
+        this.shieldActive = false;
+        this.shieldHitsRemaining = 0;
+        this.shieldExpiresAt = 0;
+        this.shieldStartedBySlowSafety = false;
+        this.coinRushProgress = 0;
+        this.coinRushTarget = 10;
+        this.coinRushActive = false;
+        this.coinRushEndsAt = 0;
 
         // Сброс состояния смерти
         this.deathInProgress = false;
@@ -769,30 +992,42 @@ class Game {
 
     // Сохранение снапшота
     saveSnapshot() {
-        const snapshot = {
-            timer: this.timer.toSnapshot(),
-            perks: this.perks.toSnapshot(),
-            timestamp: Date.now()
-        };
-        
+        const snapshot = this.buildSnapshotPayload();
         this.storage.saveSnapshot(snapshot);
-        
-        // Синхронизация с GamePush (редко)
-        if (Math.random() < 0.1) { // 10% шанс
-            this.gamePush.saveSnapshot(snapshot);
-        }
+    }
+
+    buildSnapshotPayload() {
+        return {
+            version: 2,
+            timestamp: Date.now(),
+            timer: this.timer.toSnapshot(),
+            progression: this.perks.toSnapshot(),
+            run: {
+                score: this.score || 0,
+                runCoinsEarned: this.runCoinsEarned || 0,
+                slowCooldownUntil: this.slowCooldownUntil || 0,
+                shieldCooldownUntil: this.shieldCooldownUntil || 0,
+                shieldActive: !!this.shieldActive,
+                shieldHitsRemaining: this.shieldHitsRemaining || 0,
+                shieldExpiresAt: this.shieldExpiresAt || 0,
+                shieldStartedBySlowSafety: !!this.shieldStartedBySlowSafety,
+                coinRushProgress: this.coinRushProgress || 0,
+                coinRushTarget: this.coinRushTarget || 10,
+                coinRushActive: !!this.coinRushActive,
+                coinRushEndsAt: this.coinRushEndsAt || 0
+            }
+        };
     }
 
     // Загрузка снапшота
     loadSnapshot() {
-        // Сначала пробуем GamePush
         const gpSnapshot = this.gamePush.getSnapshot();
-        if (gpSnapshot) {
-            return gpSnapshot;
-        }
-        
-        // Потом локальный
-        return this.storage.loadSnapshot();
+        const localSnapshot = this.storage.loadSnapshot();
+        if (!gpSnapshot) return localSnapshot;
+        if (!localSnapshot) return gpSnapshot;
+        const gpTs = Number(gpSnapshot?.timestamp || 0);
+        const localTs = Number(localSnapshot?.timestamp || 0);
+        return gpTs > localTs ? gpSnapshot : localSnapshot;
     }
 
     // Восстановление из снапшота
@@ -803,12 +1038,26 @@ class Game {
         const age = Date.now() - (snapshot.timestamp || 0);
         if (age > 24 * 60 * 60 * 1000) {
             this.storage.clearSnapshot();
+            this.gamePush.saveSnapshot(null);
             return;
         }
         
         // Восстанавливаем данные, но НЕ запускаем игру
-        this.timer.fromSnapshot(snapshot.timer);
-        this.perks.fromSnapshot(snapshot.perks);
+        this.timer.fromSnapshot(snapshot.timer || {});
+        this.perks.fromSnapshot(snapshot.progression || snapshot.perks || {});
+        const run = snapshot.run || {};
+        this.score = Math.max(0, Math.floor(run.score || 0));
+        this.runCoinsEarned = Math.max(0, Math.floor(run.runCoinsEarned || 0));
+        this.slowCooldownUntil = Math.max(0, Math.floor(run.slowCooldownUntil || 0));
+        this.shieldCooldownUntil = Math.max(0, Math.floor(run.shieldCooldownUntil || 0));
+        this.shieldActive = !!run.shieldActive;
+        this.shieldHitsRemaining = Math.max(0, Math.floor(run.shieldHitsRemaining || 0));
+        this.shieldExpiresAt = Math.max(0, Math.floor(run.shieldExpiresAt || 0));
+        this.shieldStartedBySlowSafety = !!run.shieldStartedBySlowSafety;
+        this.coinRushProgress = Math.max(0, Math.floor(run.coinRushProgress || 0));
+        this.coinRushTarget = Math.max(10, Math.floor(run.coinRushTarget || 10));
+        this.coinRushActive = !!run.coinRushActive;
+        this.coinRushEndsAt = Math.max(0, Math.floor(run.coinRushEndsAt || 0));
         
         // Обновление best score из снапшота
         if (snapshot.timer && snapshot.timer.maxReached) {
@@ -941,6 +1190,64 @@ class Game {
         }
     }
 
+    mergeProgression(localProgression, cloudProgression) {
+        if (!localProgression && !cloudProgression) return null;
+        if (!localProgression) return cloudProgression;
+        if (!cloudProgression) return localProgression;
+        const localTs = Number(localProgression?.updatedAt || 0);
+        const cloudTs = Number(cloudProgression?.updatedAt || 0);
+        return cloudTs > localTs ? cloudProgression : localProgression;
+    }
+
+    persistProgressionSoon() {
+        const payload = this.perks.toSnapshot();
+        this.storage.saveProgression(payload);
+
+        if (this.progressionSyncDebounceTimer) {
+            window.clearTimeout(this.progressionSyncDebounceTimer);
+        }
+        this.progressionSyncDebounceTimer = window.setTimeout(() => {
+            this.progressionSyncDebounceTimer = null;
+            this.gamePush.saveProgression(payload);
+        }, 1500);
+    }
+
+    pauseForPerks() {
+        if (this.state !== 'RUNNING') return;
+        this._pausedByPerks = true;
+        this.pauseForLeaderboard();
+    }
+
+    resumeFromPerks() {
+        if (!this._pausedByPerks) return;
+        this._pausedByPerks = false;
+        this.resumeFromLeaderboard();
+    }
+
+    openPerksModal() {
+        if (this.state === 'RUNNING') this.pauseForPerks();
+        this.renderer?.ui?.renderPerksModal?.(this.getGameState(), this.perks.getCatalog());
+        this.renderer?.ui?.showPerksModal?.();
+
+        this.renderer?.ui?.bindPerksModalActions?.({
+            onClose: () => this.closePerksModal(),
+            onUpgrade: (perkId) => this.upgradePerk(perkId)
+        });
+    }
+
+    closePerksModal() {
+        this.renderer?.ui?.hidePerksModal?.();
+        this.resumeFromPerks();
+    }
+
+    upgradePerk(perkId) {
+        if (!this.perks?.upgradePerk?.(perkId)) return;
+        this.persistProgressionSoon();
+        this.updateUI();
+        this.renderer?.ui?.updateStartGameScreen?.(this.getGameState());
+        this.renderer?.ui?.renderPerksModal?.(this.getGameState(), this.perks.getCatalog());
+    }
+
     // Debug: полный сброс прогресса (локально + GamePush)
     async debugResetProgress() {
         try {
@@ -953,9 +1260,15 @@ class Game {
         } catch (e) {
             // ignore
         }
+        try {
+            await this.gamePush?.clearProgression?.();
+        } catch (e) {
+            // ignore
+        }
 
         this.bestScore = 0;
         this.score = 0;
+        this.perks = new PerkSystem();
         this.updateUI();
 
         // Обновим лидерборд, чтобы подтянуть обнулённый счёт

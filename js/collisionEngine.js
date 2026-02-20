@@ -112,6 +112,8 @@ class CollisionEngine {
 
         for (const circle of circles) {
             if (circle.dataset.processed === 'true') continue;
+            const itemType = circle.dataset?.itemType || 'food';
+            const isCoin = itemType === 'coin';
 
             const circleRect = circle.getBoundingClientRect();
             const imgEl = circle.querySelector('img.food-img');
@@ -151,7 +153,15 @@ class CollisionEngine {
             const closedMouthLeftHit = mouthFullyClosed && overlapsMouthVert && rightColliderHit;
             // "Невовремя захлопнулась" = рот уже не открыт, но ещё не полностью закрылся.
             const timingJawHit = (!mouthOpen) && (!mouthFullyClosed) && teethCollision;
-            const isDeathCollision = timingJawHit || closedMouthLeftHit;
+            const foodDeathCollision = timingJawHit || closedMouthLeftHit;
+
+            // Монета:
+            // - засчитывается только при "укусе" двумя челюстями;
+            // - если врезалась при закрытом рте — это game over;
+            // - если проглотили при открытом рте — ничего не начисляем.
+            const coinBiteCollision = (!mouthFullyClosed) && topCollision && botCollision;
+            const coinDeathCollision = mouthFullyClosed && (rightColliderHit || teethCollision);
+            const isDeathCollision = isCoin ? coinDeathCollision : foodDeathCollision;
 
             if (this.isDebug?.()) {
                 if (isDeathCollision) circle.classList.add('game-over-trigger');
@@ -199,14 +209,32 @@ class CollisionEngine {
                 return;
             }
 
+            if (isCoin && coinBiteCollision) {
+                const value = parseInt(circle.dataset.value, 10) || 0;
+                circle.dataset.processed = 'true';
+                circle.classList.add('passed', 'consumed');
+                const imgEl = circle.querySelector('img.food-img');
+                if (imgEl) imgEl.style.opacity = '0';
+                this.dbgLog?.('coin', { value, action: 'bitten' }, 120);
+                this.emitEvent?.('COIN_BITTEN', { value });
+                return;
+            }
+
             if (fullyPastJawLine && mouthOpen) {
                 const value = parseInt(circle.dataset.value, 10) || 0;
-                const mouthTargetX = jawRight - 20;
-                const mouthTargetY = (jawTop + jawBottom) / 2;
                 circle.dataset.processed = 'true';
-                this.animateEatIntoMouth?.(circle, container, containerRect, mouthTargetX, mouthTargetY);
-                this.dbgLog?.('eat', { value }, 120);
-                this.emitEvent?.('FOOD_EATEN', { value });
+                if (isCoin) {
+                    circle.classList.add('passed', 'consumed');
+                    const imgEl = circle.querySelector('img.food-img');
+                    if (imgEl) imgEl.style.opacity = '0';
+                    this.dbgLog?.('coin', { value, action: 'swallowed' }, 120);
+                } else {
+                    const mouthTargetX = jawRight - 20;
+                    const mouthTargetY = (jawTop + jawBottom) / 2;
+                    this.animateEatIntoMouth?.(circle, container, containerRect, mouthTargetX, mouthTargetY);
+                    this.dbgLog?.('eat', { value }, 120);
+                    this.emitEvent?.('FOOD_EATEN', { value });
+                }
                 return;
             }
         }

@@ -138,7 +138,12 @@ class RendererUI {
             pauseSoundIcon.src = state?.soundMuted ? 'img/ui/sound-off.svg' : 'img/ui/sound-on.svg';
         }
         if (pauseSoundText) {
-            pauseSoundText.textContent = state?.soundMuted ? 'SOUND: OFF' : 'SOUND: ON';
+            const muted = !!state?.soundMuted;
+            if (window.I18N && typeof window.I18N.t === 'function') {
+                pauseSoundText.textContent = window.I18N.t(muted ? 'PAUSE_SOUND_OFF' : 'PAUSE_SOUND_ON');
+            } else {
+                pauseSoundText.textContent = muted ? 'SOUND: OFF' : 'SOUND: ON';
+            }
         }
     }
 
@@ -302,7 +307,11 @@ class RendererUI {
             nameSpan.textContent = String(name || '');
             const youSpan = document.createElement('span');
             youSpan.className = 'lb-you';
-            youSpan.textContent = ' (You)';
+            if (window.I18N && typeof window.I18N.t === 'function') {
+                youSpan.textContent = window.I18N.t('LEADERBOARD_YOU_SUFFIX');
+            } else {
+                youSpan.textContent = ' (You)';
+            }
             const penImg = document.createElement('img');
             penImg.src = 'img/ui/pen.svg';
             penImg.alt = '';
@@ -360,7 +369,9 @@ class RendererUI {
         if (me) {
             const rank = this._lbGetRank(me, 0);
             const name = overrideName || this._lbGetName(me);
-            const score = this._lbGetScore(me);
+            const apiScore = this._lbGetScore(me);
+            const displayBest = Math.floor(Number(data?.displayBestScore) || 0);
+            const score = Math.max(apiScore, displayBest);
             this.leaderboardMeEl.appendChild(this._lbMakeRow({ rank, name, score, isMe: true }));
         } else {
             const msg = document.createElement('div');
@@ -425,18 +436,18 @@ class RendererUI {
         if (coinsEl) coinsEl.textContent = coins;
         if (slowCountEl) slowCountEl.textContent = Math.max(0, state?.slowSpellCount ?? 1);
         if (shieldCountEl) shieldCountEl.textContent = Math.max(0, state?.shieldSpellCount ?? 1);
-        const slowCost = Math.max(0, state?.spellShopCosts?.slow ?? 10);
-        const shieldCost = Math.max(0, state?.spellShopCosts?.shield ?? 5);
+        const slowCost = state?.spellShopCosts?.slow;
+        const shieldCost = state?.spellShopCosts?.shield;
 
         if (buySlowBtn) {
-            buySlowBtn.disabled = coins < slowCost;
             const priceEl = buySlowBtn.querySelector('span[data-price]');
-            if (priceEl) priceEl.textContent = String(slowCost);
+            if (priceEl) priceEl.textContent = typeof slowCost === 'number' ? String(slowCost) : '—';
+            buySlowBtn.disabled = typeof slowCost !== 'number' || coins < slowCost;
         }
         if (buyShieldBtn) {
-            buyShieldBtn.disabled = coins < shieldCost;
             const priceEl = buyShieldBtn.querySelector('span[data-price]');
-            if (priceEl) priceEl.textContent = String(shieldCost);
+            if (priceEl) priceEl.textContent = typeof shieldCost === 'number' ? String(shieldCost) : '—';
+            buyShieldBtn.disabled = typeof shieldCost !== 'number' || coins < shieldCost;
         }
     }
 

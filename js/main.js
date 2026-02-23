@@ -9,7 +9,10 @@ function startLoadingAnimation(playBtn) {
     let dotCount = 3;
     const updateText = () => {
         const dots = '.'.repeat(dotCount);
-        playBtn.textContent = `Loading${dots}`;
+        const base = (window.I18N && typeof window.I18N.t === 'function')
+            ? window.I18N.t('START_LOADING')
+            : 'Loading';
+        playBtn.textContent = `${base}${dots}`;
         dotCount = dotCount === 1 ? 3 : dotCount - 1;
     };
     
@@ -26,7 +29,10 @@ function stopLoadingAnimation(playBtn) {
         loadingAnimationInterval = null;
     }
     if (playBtn) {
-        playBtn.textContent = 'PLAY';
+        const label = (window.I18N && typeof window.I18N.t === 'function')
+            ? window.I18N.t('START_PLAY')
+            : 'PLAY';
+        playBtn.textContent = label;
     }
 }
 
@@ -48,7 +54,7 @@ async function init() {
         // Важно: если пользователь кликнул PLAY до завершения init(), Game сам запустится
         // после инициализации (pendingStart). В таком случае не показываем стартовый экран поверх игры.
         if (game && game.state === 'MENU') {
-            game.renderer.showStartScreen(game.getGameState());
+            game.showStartScreenOverlay();
         }
     } catch (error) {
         console.error('Ошибка инициализации игры:', error);

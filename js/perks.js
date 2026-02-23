@@ -1,4 +1,7 @@
 // Система долгосрочного прогресса: Coins + Spells + Perks
+// Единственное место цен на спеллы — здесь. Game/rendererUI только пробрасывают this.spellShopCosts, без своих чисел.
+const SPELL_SHOP_COSTS = { slow: 10, shield: 7 };
+
 class PerkSystem {
     constructor() {
         this.version = 2;
@@ -14,7 +17,7 @@ class PerkSystem {
             doubleBite: 0,
             coinRushBoost: 0
         };
-        this.spellShopCosts = { slow: 30, shield: 45 };
+        this.spellShopCosts = { ...SPELL_SHOP_COSTS };
 
         // Legacy поля (чтобы старый HUD/код не ломался)
         this.streakPoints = 0;

@@ -38,10 +38,12 @@ class PenguinRig {
         const botJaw = root.querySelector('#penguin-bot-jaw');
         const topJawImg = topJaw?.querySelector?.('.penguin-jaw-base') || null;
         const botJawImg = botJaw?.querySelector?.('.penguin-jaw-base') || null;
+        const leftColliderLayer = root.querySelector('#penguin-left-collider-layer');
         const rightColliderPath = rightColliderLayer?.querySelector?.('#penguin-right-collider-path') || null;
+        const leftColliderPath = leftColliderLayer?.querySelector?.('#penguin-left-collider-path') || null;
         const topColliderPath = topJaw?.querySelector?.('#penguin-top-collider-path') || null;
         const botColliderPath = botJaw?.querySelector?.('#penguin-bot-collider-path') || null;
-        return { root, head, eye, topJaw, botJaw, topJawImg, botJawImg, rightColliderPath, topColliderPath, botColliderPath };
+        return { root, head, eye, topJaw, botJaw, topJawImg, botJawImg, leftColliderPath, rightColliderPath, topColliderPath, botColliderPath };
     }
 
     applyMouthPose(open) {

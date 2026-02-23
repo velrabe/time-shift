@@ -108,6 +108,11 @@
                     <div id="penguin-eye-layer" class="penguin-layer penguin-layer--eye" aria-hidden="true">
                         <img id="penguin-eye" class="penguin-part" src="img/head/eye-1.svg" alt="">
                     </div>
+                    <div id="penguin-left-collider-layer" class="penguin-layer penguin-layer--left-collider" aria-hidden="true">
+                        <svg class="penguin-collider" viewBox="0 0 546 200" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                            <path id="penguin-left-collider-path" d="M470 168L470 70L400 75L398 165L470 168Z" fill="none" stroke="none"/>
+                        </svg>
+                    </div>
                     <div id="penguin-right-collider-layer" class="penguin-layer penguin-layer--right-collider" aria-hidden="true">
                         <svg class="penguin-collider" viewBox="0 0 546 200" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
                             <path id="penguin-right-collider-path" d="M506.904 164.715L505.566 67.5791H490.524L493.759 168.755L506.904 164.715Z" fill="none" stroke="none"/>
@@ -226,9 +231,6 @@
                     <button id="lang-ru" class="pause-btn pause-btn--lang pause-btn--lang-active" type="button" data-lang="ru">
                         <span>русский</span>
                     </button>
-                    <button id="lang-es" class="pause-btn pause-btn--lang" type="button" data-lang="es">
-                        <span>Español</span>
-                    </button>
                 </div>
             </div>
         </div>
@@ -274,6 +276,31 @@
                 </div>
 
                 <div id="leaderboard-me" class="lb-me" role="rowgroup" aria-label="Your position"></div>
+            </div>
+        </div>
+
+        <!-- Rename Player Modal -->
+        <div id="rename-modal" class="overlay-screen rename-overlay hidden" role="dialog" aria-modal="true" aria-label="Изменить имя">
+            <div class="rename-popup">
+                <div class="rename-header">
+                    <h2 class="rename-title">Изменить имя</h2>
+                    <button id="rename-close-btn" class="rename-close-btn" type="button" aria-label="Закрыть" title="Закрыть">
+                        <img src="img/ui/x-mark.svg" alt="" aria-hidden="true">
+                    </button>
+                </div>
+                <div class="rename-body">
+                    <label class="rename-label" for="rename-input">Имя в таблице лидеров</label>
+                    <input
+                        id="rename-input"
+                        class="rename-input"
+                        type="text"
+                        maxlength="20"
+                        autocomplete="name"
+                    >
+                    <button id="rename-save-btn" class="pause-btn pause-btn--primary rename-save-btn" type="button">
+                        <span>Сохранить</span>
+                    </button>
+                </div>
             </div>
         </div>
 
@@ -363,11 +390,11 @@
                                 <span class="start-spell-desc">protects against one mistake</span>
                             </div>
                             <div class="start-spell-buy-wrap">
-                                <button type="button" class="start-buy-btn" data-spell="shield" aria-label="Buy Shield for 5 coins">
+                                <button type="button" class="start-buy-btn" data-spell="shield" aria-label="Buy Shield for 7 coins">
                                     <span class="start-buy-text">Buy</span>
                                     <div class="start-buy-price">
                                         <img src="img/ui/coin.svg" alt="" class="start-buy-coin" aria-hidden="true">
-                                        <span data-price="5">5</span>
+                                        <span data-price="7">7</span>
                                     </div>
                                 </button>
                             </div>
@@ -407,6 +434,7 @@
     <script src="js/playerName.js"></script>
     <script src="js/stripConveyor.js"></script>
     <script src="js/collisionEngine.js"></script>
+    <script src="js/i18n.js"></script>
     <script src="js/rendererUI.js"></script>
     <script src="js/penguinRig.js"></script>
     <script src="js/cloudsBackground.js"></script>

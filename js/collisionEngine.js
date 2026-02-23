@@ -14,10 +14,12 @@ class CollisionEngine {
         this.emitEvent = options.emitEvent;
 
         this.deathTriggered = false;
+        this.swallowBoostState = new WeakMap();
     }
 
     reset() {
         this.deathTriggered = false;
+        this.swallowBoostState = new WeakMap();
     }
 
     getMouthBounds(containerRect, jawTopRect, jawBotRect) {
@@ -26,6 +28,69 @@ class CollisionEngine {
             jawTop: Math.min(jawTopRect.top, jawBotRect.top) - containerRect.top,
             jawBottom: Math.max(jawTopRect.bottom, jawBotRect.bottom) - containerRect.top
         };
+    }
+
+    getPolyRightBoundX(poly, containerLeft) {
+        if (!poly || poly.length === 0 || containerLeft == null) return null;
+        let maxX = -Infinity;
+        for (const p of poly) {
+            const x = p.x - containerLeft;
+            if (x > maxX) maxX = x;
+        }
+        return Number.isFinite(maxX) ? maxX : null;
+    }
+
+    getNowMs() {
+        return (typeof performance !== 'undefined' && typeof performance.now === 'function')
+            ? performance.now()
+            : Date.now();
+    }
+
+    getSwallowBoostState(circle, nowMs) {
+        let state = this.swallowBoostState.get(circle);
+        if (!state) {
+            state = {
+                active: false,
+                entered: false,
+                extraOffsetX: 0,
+                targetSpeedPxMs: 0,
+                boostStartMs: 0,
+                lastTickMs: nowMs,
+                prevCenterX: null,
+                prevCenterTs: nowMs
+            };
+            this.swallowBoostState.set(circle, state);
+        }
+        return state;
+    }
+
+    clearSwallowBoost(circle, state) {
+        if (!circle) return;
+        if (state) {
+            state.active = false;
+            state.entered = false;
+            state.extraOffsetX = 0;
+            state.targetSpeedPxMs = 0;
+            state.lastTickMs = this.getNowMs();
+        }
+        circle.dataset.swallowBoost = 'false';
+        circle.style.removeProperty('transform');
+    }
+
+    applySwallowBoostTick(circle, state, nowMs) {
+        if (!circle || !state?.active) return;
+        const dtMs = Math.max(0, nowMs - (state.lastTickMs || nowMs));
+        state.lastTickMs = nowMs;
+        const targetSpeed = Number.isFinite(state.targetSpeedPxMs) ? state.targetSpeedPxMs : 0;
+        if (targetSpeed <= 0 || dtMs <= 0) return;
+
+        const easeDurationMs = 360;
+        const elapsed = Math.max(0, nowMs - (state.boostStartMs || nowMs));
+        const t = Math.min(1, elapsed / easeDurationMs);
+        const easeIn = t * t;
+        const currentSpeed = targetSpeed * easeIn;
+        state.extraOffsetX -= currentSpeed * dtMs;
+        circle.style.transform = `translateX(${state.extraOffsetX.toFixed(2)}px)`;
     }
 
     getPathPolyOnScreen(pathEl, sampleCount = 20) {
@@ -101,19 +166,44 @@ class CollisionEngine {
         const { jawRight, jawTop, jawBottom } = this.getMouthBounds(containerRect, jawTopRect, jawBotRect);
         const mouthOpen = !!this.isMouthOpen?.();
         const mouthFullyClosed = !!this.isMouthFullyClosed?.();
+        const leftColliderPoly = this.getPathPolyOnScreen(parts.leftColliderPath, 24);
         const rightColliderPoly = this.getPathPolyOnScreen(parts.rightColliderPath, 24);
         const topColliderPoly = this.getPathPolyOnScreen(parts.topColliderPath, 24);
         const botColliderPoly = this.getPathPolyOnScreen(parts.botColliderPath, 24);
+        const leftColliderRightX = this.getPolyRightBoundX(leftColliderPoly, containerRect.left);
+        const nowMs = this.getNowMs();
 
         const circles = Array.from(numberStrip.querySelectorAll('.number-circle:not(.passed)'));
         let nearestCircle = null;
         let nearestDistance = Infinity;
         let collidingCircle = null;
+        const nearbyCandidates = [];
 
+        // Быстрый предфильтр: полную SAT-геометрию считаем только у объектов рядом с пастью.
+        // Это убирает пиковые лаги на старте при большом количестве элементов в DOM.
+        const forwardRangePx = 260;
+        const backwardRangePx = 340;
         for (const circle of circles) {
+            if (circle.dataset.processed === 'true') continue;
+            const r = circle.getBoundingClientRect();
+            const centerX = ((r.left + r.right) * 0.5) - containerRect.left;
+            const distanceToJaw = Math.abs(centerX - jawRight);
+            if (distanceToJaw < nearestDistance) {
+                nearestDistance = distanceToJaw;
+                nearestCircle = circle;
+            }
+            if (centerX >= (jawRight - backwardRangePx) && centerX <= (jawRight + forwardRangePx)) {
+                nearbyCandidates.push({ circle, distanceToJaw });
+            }
+        }
+        nearbyCandidates.sort((a, b) => a.distanceToJaw - b.distanceToJaw);
+        const circlesToProcess = nearbyCandidates.slice(0, 10).map((entry) => entry.circle);
+
+        for (const circle of circlesToProcess) {
             if (circle.dataset.processed === 'true') continue;
             const itemType = circle.dataset?.itemType || 'food';
             const isCoin = itemType === 'coin';
+            const boostState = this.getSwallowBoostState(circle, nowMs);
 
             const circleRect = circle.getBoundingClientRect();
             const imgEl = circle.querySelector('img.food-img');
@@ -123,27 +213,32 @@ class CollisionEngine {
             const imgRight = (imgRect ? imgRect.right : circleRect.right) - containerRect.left;
             const imgTop = (imgRect ? imgRect.top : circleRect.top) - containerRect.top;
             const imgBottom = (imgRect ? imgRect.bottom : circleRect.bottom) - containerRect.top;
-
-            const circleCenterX = (imgLeft + imgRight) / 2;
-            const distanceToJaw = Math.abs(circleCenterX - jawRight);
-            if (distanceToJaw < nearestDistance) {
-                nearestDistance = distanceToJaw;
-                nearestCircle = circle;
-            }
+            const imgCenterX = (imgLeft + imgRight) / 2;
+            const dtObsMs = Math.max(1, nowMs - (boostState.prevCenterTs || nowMs));
+            const observedSpeedPxMs = (boostState.prevCenterX != null)
+                ? Math.abs((imgCenterX - boostState.prevCenterX) / dtObsMs)
+                : 0;
+            boostState.prevCenterX = imgCenterX;
+            boostState.prevCenterTs = nowMs;
 
             const foodRectPage = imgRect || circleRect;
             const overlapsMouthVert = (imgBottom >= jawTop) && (imgTop <= jawBottom);
-            const imgCenterX = (imgLeft + imgRight) / 2;
             const swallowDepthPx = Math.max(14, Math.round((jawBottom - jawTop) * 0.22));
             const stomachThresholdX = jawRight - swallowDepthPx;
             const fullyPastJawLine = overlapsMouthVert && (imgCenterX <= stomachThresholdX);
+            const hasExitedLeftCollider = leftColliderRightX != null && overlapsMouthVert && (imgRight <= leftColliderRightX);
+            const swallowTrigger = hasExitedLeftCollider || (leftColliderRightX == null && fullyPastJawLine);
 
-            const foodPoly = [
-                { x: foodRectPage.left, y: foodRectPage.top },
-                { x: foodRectPage.right, y: foodRectPage.top },
-                { x: foodRectPage.right, y: foodRectPage.bottom },
-                { x: foodRectPage.left, y: foodRectPage.bottom }
-            ];
+            const colliderPath = circle.querySelector('.food-collider path');
+            let foodPoly = (colliderPath && this.getPathPolyOnScreen(colliderPath, 24)) || null;
+            if (!foodPoly) {
+                foodPoly = [
+                    { x: foodRectPage.left, y: foodRectPage.top },
+                    { x: foodRectPage.right, y: foodRectPage.top },
+                    { x: foodRectPage.right, y: foodRectPage.bottom },
+                    { x: foodRectPage.left, y: foodRectPage.bottom }
+                ];
+            }
             const topCollision = this.polygonsOverlapSAT(foodPoly, topColliderPoly);
             const botCollision = this.polygonsOverlapSAT(foodPoly, botColliderPoly);
             const teethCollision = topCollision || botCollision;
@@ -155,11 +250,26 @@ class CollisionEngine {
             const timingJawHit = (!mouthOpen) && (!mouthFullyClosed) && teethCollision;
             const foodDeathCollision = timingJawHit || closedMouthLeftHit;
 
+            // Фаза 1: как только объект начинает пересекать right-collider, добавляем
+            // локальное смещение влево с той же скоростью ленты (итого ≈ x2).
+            if (!isCoin && mouthOpen && rightColliderHit && !boostState.active && !boostState.entered) {
+                const sampled = Number.isFinite(observedSpeedPxMs) ? observedSpeedPxMs : 0;
+                const clamped = Math.max(0.03, Math.min(0.45, sampled || 0.07));
+                boostState.active = true;
+                boostState.entered = true;
+                boostState.targetSpeedPxMs = clamped;
+                boostState.boostStartMs = nowMs;
+                boostState.lastTickMs = nowMs;
+                circle.dataset.swallowBoost = 'true';
+            }
+            if (!isCoin) this.applySwallowBoostTick(circle, boostState, nowMs);
+
             // Монета:
-            // - засчитывается только при "укусе" двумя челюстями;
-            // - если врезалась при закрытом рте — это game over;
-            // - если проглотили при открытом рте — ничего не начисляем.
-            const coinBiteCollision = (!mouthFullyClosed) && topCollision && botCollision;
+            // - Коины начисляются только при реальном укусе: обе челюсти захватили монетку и рот ещё не полностью закрыт (момент сжатия).
+            // - Если рот уже полностью закрыт и монетка касается рта/зубов — это опасный контакт (смерть или поглощение щитом), коины не даём, монетка просто исчезает.
+            // - Проглоченная монетка (прошла вглубь при открытом рте) даёт обычные очки, как еда.
+            const coinBothJaws = topCollision && botCollision;
+            const coinBiteCollision = coinBothJaws && !mouthFullyClosed;
             const coinDeathCollision = mouthFullyClosed && (rightColliderHit || teethCollision);
             const isDeathCollision = isCoin ? coinDeathCollision : foodDeathCollision;
 
@@ -169,6 +279,7 @@ class CollisionEngine {
             }
 
             if (isDeathCollision) {
+                this.clearSwallowBoost(circle, boostState);
                 collidingCircle = circle;
                 const value = parseInt(circle.dataset.value, 10) || 0;
                 const reason = timingJawHit
@@ -177,7 +288,8 @@ class CollisionEngine {
 
                 if (this.isDebug?.()) {
                     const dangerRect = foodRectPage;
-                    this.updateDebugObjectBoxes?.(circle, containerRect);
+                    const dangerPoly = foodPoly;
+                    this.updateDebugObjectBoxes?.(circle, containerRect, true, dangerPoly);
                     this.updateDebugOverlay?.({
                         containerRect,
                         jawTopRect,
@@ -186,6 +298,7 @@ class CollisionEngine {
                         teethBotPoly: botColliderPoly,
                         rightColliderPoly,
                         dangerRect,
+                        dangerPoly,
                         biteX: jawRight
                     });
                 }
@@ -197,12 +310,11 @@ class CollisionEngine {
                         mouthOpen,
                         kind: reason
                     }, 0);
-                    if (timingJawHit) {
-                        this.triggerTeethHitFx?.();
-                    }
+                    // Анимация перелома зубов вызывается в game.beginDeath только при реальной смерти (не при щите).
                     this.emitEvent?.('PENGUIN_COLLISION', {
                         reason,
-                        value
+                        value,
+                        circle
                     });
                 }
                 circle.dataset.processed = 'true';
@@ -210,17 +322,24 @@ class CollisionEngine {
             }
 
             if (isCoin && coinBiteCollision) {
+                this.clearSwallowBoost(circle, boostState);
                 const value = parseInt(circle.dataset.value, 10) || 0;
                 circle.dataset.processed = 'true';
                 circle.classList.add('passed', 'consumed');
                 const imgEl = circle.querySelector('img.food-img');
                 if (imgEl) imgEl.style.opacity = '0';
+                const centerX = (imgLeft + imgRight) / 2;
+                const centerY = (imgTop + imgBottom) / 2;
                 this.dbgLog?.('coin', { value, action: 'bitten' }, 120);
-                this.emitEvent?.('COIN_BITTEN', { value });
+                this.emitEvent?.('COIN_BITTEN', { value, x: centerX, y: centerY });
                 return;
             }
 
-            if (fullyPastJawLine && mouthOpen) {
+            if (swallowTrigger && mouthOpen) {
+                // Фаза 2: объект покинул left-collider -> безопасен и запускаем анимацию проглатывания.
+                boostState.active = false;
+                circle.dataset.swallowBoost = 'false';
+                circle.dataset.safeAfterLeftCollider = 'true';
                 const value = parseInt(circle.dataset.value, 10) || 0;
                 circle.dataset.processed = 'true';
                 if (isCoin) {
@@ -228,6 +347,7 @@ class CollisionEngine {
                     const imgEl = circle.querySelector('img.food-img');
                     if (imgEl) imgEl.style.opacity = '0';
                     this.dbgLog?.('coin', { value, action: 'swallowed' }, 120);
+                    this.emitEvent?.('COIN_SWALLOWED', { value });
                 } else {
                     const mouthTargetX = jawRight - 20;
                     const mouthTargetY = (jawTop + jawBottom) / 2;
@@ -261,7 +381,23 @@ class CollisionEngine {
                 dbg.lastTrackedWasColliding = trackedIsColliding;
             }
 
-            this.updateDebugObjectBoxes?.(tracked, containerRect, trackedIsColliding);
+            let trackedDangerRect = null;
+            let trackedDangerPoly = null;
+            if (tracked) {
+                const tr = tracked.querySelector('img.food-img')?.getBoundingClientRect?.() || tracked.getBoundingClientRect();
+                trackedDangerRect = tr;
+                const tp = tracked.querySelector('.food-collider path');
+                trackedDangerPoly = (tp && this.getPathPolyOnScreen(tp, 24)) || null;
+                if (!trackedDangerPoly && tr) {
+                    trackedDangerPoly = [
+                        { x: tr.left, y: tr.top },
+                        { x: tr.right, y: tr.top },
+                        { x: tr.right, y: tr.bottom },
+                        { x: tr.left, y: tr.bottom }
+                    ];
+                }
+            }
+            this.updateDebugObjectBoxes?.(tracked, containerRect, trackedIsColliding, trackedDangerPoly);
             this.updateDebugOverlay?.({
                 containerRect,
                 jawTopRect,
@@ -269,7 +405,8 @@ class CollisionEngine {
                 teethTopPoly: topColliderPoly,
                 teethBotPoly: botColliderPoly,
                 rightColliderPoly,
-                dangerRect: null,
+                dangerRect: trackedDangerRect,
+                dangerPoly: trackedDangerPoly,
                 biteX: jawRight
             });
         }

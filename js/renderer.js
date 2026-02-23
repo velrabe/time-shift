@@ -23,8 +23,12 @@ class Renderer {
         
         this._mouthHoldMaxMs = 2000;
         
-        // Набор "баз" для разнообразия еды на ленте (стабильный выбор по value).
-        this.foodBases = ['f1', 'f2', 'f3', 'f4', 'f5'];
+        // Набор "баз" для разнообразия еды на ленте (картинки в img/food/*.svg).
+        this.foodBases = ['f1', 'f2', 'f3', 'f4', 'f5', 'f6'];
+        // Кэш данных коллайдера из масок SVG (viewBox + path d).
+        this._foodColliderCache = {};
+        // In-flight fetch cache: убирает дубликаты тяжелых запросов к одним и тем же SVG.
+        this._foodColliderPromiseCache = {};
 
         this.stripConveyor = new StripConveyorSystem({
             numberStrip: this.numberStrip,
@@ -248,20 +252,25 @@ class Renderer {
         return bases[idx];
     }
 
+    getRandomFoodBase() {
+        const bases = this.foodBases || [];
+        if (bases.length === 0) return null;
+        const idx = Math.floor(Math.random() * bases.length);
+        return bases[idx] || bases[0];
+    }
+
     getFoodSrc(base) {
         if (!base) return '';
-        return `img/${base}-s.png`;
+        return `img/food/${base}-s.svg`;
     }
 
     getFoodSrcCandidates(base) {
         if (!base) return [];
         return [
-            `img/${base}-s.png`,
-            `img/${base}.png`,
+            `img/food/${base}-s.svg`,
             `img/food/${base}-s.png`,
-            `img/food/${base}.png`,
-            `img/${base}.webp`,
-            `img/${base}.svg`
+            `img/${base}-s.png`,
+            `img/${base}.png`
         ];
     }
 
@@ -271,11 +280,73 @@ class Renderer {
             f2: ['#7dd56f', '#34a853'],
             f3: ['#8ec5ff', '#4d8dff'],
             f4: ['#ffd36e', '#ffb020'],
-            f5: ['#caa6ff', '#8e66ff']
+            f5: ['#caa6ff', '#8e66ff'],
+            f6: ['#ff9a8b', '#ff6b6b']
         };
         const [c1, c2] = palette[base] || palette.f1;
         const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="160" height="160" viewBox="0 0 160 160"><defs><radialGradient id="g" cx="35%" cy="30%" r="70%"><stop offset="0%" stop-color="${c1}"/><stop offset="100%" stop-color="${c2}"/></radialGradient></defs><circle cx="80" cy="80" r="62" fill="url(#g)"/><circle cx="58" cy="58" r="12" fill="rgba(255,255,255,0.35)"/></svg>`;
         return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+    }
+
+    /** Загружает из img/food/{base}-s.svg маску и возвращает { viewBox, pathD }. Результат кэшируется. */
+    async fetchFoodColliderData(base) {
+        if (this._foodColliderCache[base]) return this._foodColliderCache[base];
+        if (this._foodColliderPromiseCache[base]) return this._foodColliderPromiseCache[base];
+
+        this._foodColliderPromiseCache[base] = (async () => {
+            try {
+                const url = this.getFoodSrc(base);
+                const res = await fetch(url);
+                if (!res.ok) throw new Error(`Failed to fetch collider source: ${res.status}`);
+                const text = await res.text();
+                const viewBoxMatch = text.match(/viewBox="([^"]+)"/);
+                // Старый формат: path внутри <mask>; новый формат: контур прямо в корне <svg><path d="..."/>
+                const pathInMask = text.match(/<mask[^>]*>[\s\S]*?<path\s+d="([^"]+)"/);
+                const pathInRoot = text.match(/<path\s[^>]*\bd="([^"]+)"/);
+                const viewBox = viewBoxMatch ? viewBoxMatch[1] : '0 0 200 200';
+                const pathD = (pathInMask ? pathInMask[1] : null) || (pathInRoot ? pathInRoot[1] : null);
+                const data = { viewBox, pathD };
+                this._foodColliderCache[base] = data;
+                return data;
+            } catch (e) {
+                const fallback = { viewBox: '0 0 200 200', pathD: null };
+                this._foodColliderCache[base] = fallback;
+                return fallback;
+            } finally {
+                delete this._foodColliderPromiseCache[base];
+            }
+        })();
+
+        return this._foodColliderPromiseCache[base];
+    }
+
+    /** Добавляет в круг коллайдер-SVG по маске из img/food/{base}-s.svg (асинхронно). */
+    ensureFoodCollider(circleEl, base) {
+        if (!circleEl || !base) return;
+        if (circleEl.querySelector('.food-collider')) return;
+        this.fetchFoodColliderData(base).then((data) => {
+            if (!data.pathD || !circleEl.isConnected) return;
+            const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+            svg.setAttribute('class', 'food-collider');
+            svg.setAttribute('viewBox', data.viewBox);
+            svg.setAttribute('aria-hidden', 'true');
+            svg.style.position = 'absolute';
+            svg.style.left = '50%';
+            svg.style.top = '50%';
+            svg.style.transform = 'translate(-50%, -50%)';
+            svg.style.pointerEvents = 'none';
+            svg.style.overflow = 'visible';
+            const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+            path.setAttribute('d', data.pathD);
+            path.setAttribute('fill', 'none');
+            svg.appendChild(path);
+            circleEl.appendChild(svg);
+            const img = circleEl.querySelector('img.food-img');
+            if (img && img.style.width && img.style.height) {
+                svg.style.width = img.style.width;
+                svg.style.height = img.style.height;
+            }
+        });
     }
 
     getItemTypeForValue(value) {
@@ -291,8 +362,28 @@ class Renderer {
         return this.getFoodSrc(base);
     }
 
+    setImageSrcIfChanged(img, src) {
+        if (!img || !src) return;
+        const current = img.getAttribute('src') || '';
+        if (current === src) return;
+        img.src = src;
+    }
+
+    getSizeScaleForCircle(circleEl) {
+        if (!circleEl) return 1;
+        const explicit = Number(circleEl.dataset?.sizeScale);
+        if (Number.isFinite(explicit) && explicit > 0) return explicit;
+        const cls = circleEl.dataset?.sizeClass || 'M';
+        // Стабильные размеры: одинаковые объекты всегда рендерятся в одном масштабе.
+        const byClass = { S: 1, M: 1, L: 1 };
+        return byClass[cls] || 1;
+    }
+
     ensureFoodCircle(circleEl) {
         if (!circleEl) return;
+        if (circleEl.dataset?.swallowBoost !== 'true') {
+            circleEl.style.removeProperty('transform');
+        }
         let img = circleEl.querySelector('img.food-img');
         if (!img) {
             img = document.createElement('img');
@@ -300,6 +391,7 @@ class Renderer {
             img.alt = '';
             img.draggable = false;
             img.decoding = 'async';
+            // eager — картинки появляются сразу. При тяжёлых SVG даёт лаги; с чистыми SVG без base64 — ок.
             img.loading = 'eager';
             
             // После загрузки изображения обновляем размер контейнера под реальные пропорции
@@ -315,31 +407,59 @@ class Renderer {
                 const nextIdx = idx + 1;
                 if (nextIdx < candidates.length) {
                     circleEl.dataset.foodSrcIdx = String(nextIdx);
-                    img.src = candidates[nextIdx];
+                    this.setImageSrcIfChanged(img, candidates[nextIdx]);
                     return;
                 }
-                img.src = this.getFallbackFoodSvg(base);
+                this.setImageSrcIfChanged(img, this.getFallbackFoodSvg(base));
             });
             circleEl.appendChild(img);
         }
 
-        const value = parseInt(circleEl.dataset.value);
-        const base = circleEl.dataset.foodBase || this.getFoodBaseForValue(value) || 'f1';
-        const itemType = this.getItemTypeForValue(value);
+        const value = parseInt(circleEl.dataset.value, 10);
+        const rushActive = !!window.gameInstance?.isCoinRushActive?.();
+        const storedType = circleEl?.dataset?.itemType;
+        const hasStoredType = storedType === 'food' || storedType === 'coin';
+        const itemType = rushActive
+            ? 'coin'
+            : (hasStoredType ? storedType : this.getItemTypeForValue(value));
+        const base = circleEl.dataset.foodBase || this.getRandomFoodBase() || this.getFoodBaseForValue(value) || 'f1';
+
         circleEl.dataset.foodBase = base;
         circleEl.dataset.itemType = itemType;
         if (itemType === 'food') {
             circleEl.dataset.foodSrcIdx = '0';
             const candidates = this.getFoodSrcCandidates(base);
-            img.src = candidates[0] || this.getFallbackFoodSvg(base);
+            this.setImageSrcIfChanged(img, candidates[0] || this.getFallbackFoodSvg(base));
+            this.ensureFoodCollider(circleEl, base);
+            this.setFoodPlaceholderSize(circleEl, img);
         } else {
-            img.src = this.getItemSrc(itemType, base);
+            // При Coin Rush круги становятся монетами не только визуально:
+            // удаляем маску-коллайдер еды, чтобы физика не считала старый food-path.
+            const oldCollider = circleEl.querySelector('.food-collider');
+            if (oldCollider) oldCollider.remove();
+            this.setImageSrcIfChanged(img, this.getItemSrc(itemType, base));
+            this.setFoodPlaceholderSize(circleEl, img);
         }
         
-        // Если изображение уже загружено, обновляем размер сразу
         if (img.complete && img.naturalWidth > 0) {
             this.updateFoodContainerSize(circleEl, img);
         }
+    }
+
+    /** Задаёт размер img до загрузки, чтобы не было "прыжка" с исходных размеров SVG. */
+    setFoodPlaceholderSize(circleEl, img) {
+        if (!circleEl || !img) return;
+        const baseUnit = parseFloat(getComputedStyle(circleEl).getPropertyValue('--circle-size')) || 63;
+        const isCoin = circleEl?.dataset?.itemType === 'coin';
+        const baselineSmallHeight = isCoin ? 64 : 161.5;
+        const sizeScale = this.getSizeScaleForCircle(circleEl);
+        const globalScale = (baseUnit / baselineSmallHeight) * (isCoin ? 0.72 : 0.5) * sizeScale;
+        const placeholderW = 200 * globalScale;
+        const placeholderH = (isCoin ? 64 : 161.5) * globalScale;
+        // Слот по ширине объекта (без искусственного центр-смещения внутри фиксированного контейнера).
+        circleEl.style.width = `${placeholderW}px`;
+        img.style.width = `${placeholderW}px`;
+        img.style.height = `${placeholderH}px`;
     }
 
     // Обновление размера под реальные пропорции ассета (в "оригинальных" размерах, с единым масштабом)
@@ -355,9 +475,10 @@ class Renderer {
         const baseUnit = parseFloat(getComputedStyle(circleEl).getPropertyValue('--circle-size')) || 63;
         const isCoin = circleEl?.dataset?.itemType === 'coin';
         const baselineSmallHeight = isCoin ? 64 : 161.5;
+        const sizeScale = this.getSizeScaleForCircle(circleEl);
         // Глобальный масштаб подгоняет всё под circle-size; дополнительный
         // коэффициент 0.5 уменьшает ВСЕ объекты на ленте в 2 раза.
-        const globalScale = (baseUnit / baselineSmallHeight) * (isCoin ? 0.72 : 0.5);
+        const globalScale = (baseUnit / baselineSmallHeight) * (isCoin ? 0.72 : 0.5) * sizeScale;
 
         const targetWidth = naturalWidth * globalScale;
         const targetHeight = naturalHeight * globalScale;
@@ -366,6 +487,13 @@ class Renderer {
         // иначе ломается "питч" ленты (движение/рецикл завязаны на постоянный шаг).
         img.style.width = `${targetWidth}px`;
         img.style.height = `${targetHeight}px`;
+        circleEl.style.width = `${targetWidth}px`;
+
+        const colliderSvg = circleEl.querySelector('.food-collider');
+        if (colliderSvg) {
+            colliderSvg.style.width = `${targetWidth}px`;
+            colliderSvg.style.height = `${targetHeight}px`;
+        }
 
         // Реальные размеры для физики/дебага
         circleEl.dataset.actualWidth = String(targetWidth);
@@ -438,57 +566,69 @@ class Renderer {
             teethTopPolyEl: ensurePoly('debug-teeth-top-poly', { fill: 'rgba(255,0,0,0.10)', stroke: 'rgba(255,0,0,0.95)' }),
             teethBotPolyEl: ensurePoly('debug-teeth-bot-poly', { fill: 'rgba(255,165,0,0.10)', stroke: 'rgba(255,165,0,0.95)' }),
             rightColliderPolyEl: ensurePoly('debug-right-collider-poly', { fill: 'rgba(0,120,255,0.10)', stroke: 'rgba(0,120,255,0.95)' }),
+            dangerPolyEl: ensurePoly('debug-danger-poly', { fill: 'rgba(0,150,255,0.08)', stroke: 'rgba(0,150,255,0.9)' }),
             jawTopBox: ensure('debug-jaw-top-box', 'debug-box debug-jaw-top'),
             dangerBox: ensure('debug-danger-box', 'debug-box debug-danger'),
             biteLine: ensure('debug-bite-line', 'debug-line debug-bite'),
-            // Дополнительная горизонтальная линия по нижней границе челюсти
             jawBottomLine: ensure('debug-jaw-bottom-line', 'debug-line debug-jaw-bottom')
         };
     }
 
     // Обновление границ объекта на ленте для debug (один объект: ближайший/в коллизии)
-    updateDebugObjectBoxes(trackedCircle, containerRect, isColliding = false) {
+    updateDebugObjectBoxes(trackedCircle, containerRect, isColliding = false, dangerPoly = null) {
         if (!this.debug || !this.debugEls?.objectsContainer) return;
         
         const container = this.debugEls.objectsContainer;
-        // Очищаем старые боксы
         container.innerHTML = '';
         
-        // Показываем только один "трекаемый" объект (если есть)
         if (!trackedCircle) return;
         
         const img = trackedCircle.querySelector('img.food-img');
         const imgRect = img?.getBoundingClientRect?.() || null;
+        const rect = imgRect || trackedCircle.getBoundingClientRect();
+        const left = rect.left - containerRect.left;
+        const top = rect.top - containerRect.top;
+        const width = rect.width;
+        const height = rect.height;
 
-        // В physics-режиме размеры еды задаются непосредственно img (через updateFoodContainerSize),
-        // поэтому самый точный hitbox — это boundingClientRect самой картинки.
-        const left = (imgRect ? imgRect.left : trackedCircle.getBoundingClientRect().left) - containerRect.left;
-        const top = (imgRect ? imgRect.top : trackedCircle.getBoundingClientRect().top) - containerRect.top;
-        const width = imgRect ? imgRect.width : trackedCircle.getBoundingClientRect().width;
-        const height = imgRect ? imgRect.height : trackedCircle.getBoundingClientRect().height;
-        
-        const box = document.createElement('div');
-        box.className = 'debug-box';
-        box.style.position = 'absolute';
-        // Позиционируем по центру изображения
-        box.style.left = `${left}px`;
-        box.style.top = `${top}px`;
-        box.style.width = `${width}px`;
-        box.style.height = `${height}px`;
-        
-        // Цвет: красный = реальная коллизия (смерть при закрытом рте), синий = просто трекинг.
-        box.style.borderColor = isColliding ? 'rgba(255, 0, 0, 1)' : 'rgba(0, 150, 255, 0.35)';
-        box.style.background = isColliding ? 'rgba(255, 0, 0, 0.10)' : 'rgba(0, 150, 255, 0.04)';
-        box.style.borderWidth = isColliding ? '3px' : '1px';
-        box.style.borderStyle = 'solid';
-        box.style.boxSizing = 'border-box';
-        
-        container.appendChild(box);
+        if (Array.isArray(dangerPoly) && dangerPoly.length >= 3) {
+            const pts = dangerPoly.map((p) => `${p.x - containerRect.left},${p.y - containerRect.top}`).join(' ');
+            const poly = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+            poly.setAttribute('points', pts);
+            poly.setAttribute('fill', isColliding ? 'rgba(255,0,0,0.12)' : 'rgba(0,150,255,0.06)');
+            poly.setAttribute('stroke', isColliding ? 'rgba(255,0,0,1)' : 'rgba(0,150,255,0.5)');
+            poly.setAttribute('stroke-width', isColliding ? '3' : '1.5');
+            const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+            svg.setAttribute('class', 'debug-box');
+            svg.style.position = 'absolute';
+            svg.style.left = '0';
+            svg.style.top = '0';
+            svg.style.width = '100%';
+            svg.style.height = '100%';
+            svg.style.pointerEvents = 'none';
+            svg.style.overflow = 'visible';
+            svg.appendChild(poly);
+            container.appendChild(svg);
+        } else {
+            const box = document.createElement('div');
+            box.className = 'debug-box';
+            box.style.position = 'absolute';
+            box.style.left = `${left}px`;
+            box.style.top = `${top}px`;
+            box.style.width = `${width}px`;
+            box.style.height = `${height}px`;
+            box.style.borderColor = isColliding ? 'rgba(255, 0, 0, 1)' : 'rgba(0, 150, 255, 0.35)';
+            box.style.background = isColliding ? 'rgba(255, 0, 0, 0.10)' : 'rgba(0, 150, 255, 0.04)';
+            box.style.borderWidth = isColliding ? '3px' : '1px';
+            box.style.borderStyle = 'solid';
+            box.style.boxSizing = 'border-box';
+            container.appendChild(box);
+        }
     }
 
-    updateDebugOverlay({ containerRect, jawTopRect, jawBotRect, teethTopPoly, teethBotPoly, rightColliderPoly, dangerRect, biteX }) {
+    updateDebugOverlay({ containerRect, jawTopRect, jawBotRect, teethTopPoly, teethBotPoly, rightColliderPoly, dangerRect, dangerPoly, biteX }) {
         if (!this.debug || !this.debugEls) return;
-        const { jawTopBox, dangerBox, biteLine, jawBottomLine, svg, teethTopPolyEl, teethBotPolyEl, rightColliderPolyEl } = this.debugEls;
+        const { jawTopBox, dangerBox, dangerPolyEl, biteLine, jawBottomLine, svg, teethTopPolyEl, teethBotPolyEl, rightColliderPolyEl } = this.debugEls;
 
         const placeBox = (box, rect) => {
             if (!rect) {
@@ -540,8 +680,21 @@ class Renderer {
         // 1) Верхняя челюсть
         placeBox(jawTopBox, jawTopRect);
         
-        // 2. Объект в коллизии (если есть)
-        placeBox(dangerBox, dangerRect);
+        // 2. Объект в коллизии: полигон из маски SVG или AABB
+        if (dangerPolyEl) {
+            if (Array.isArray(dangerPoly) && dangerPoly.length >= 3) {
+                const pts = dangerPoly.map((p) => `${p.x - containerRect.left},${p.y - containerRect.top}`).join(' ');
+                dangerPolyEl.setAttribute('points', pts);
+                dangerPolyEl.style.display = 'block';
+                if (dangerBox) dangerBox.style.display = 'none';
+            } else {
+                dangerPolyEl.setAttribute('points', '');
+                dangerPolyEl.style.display = 'none';
+                placeBox(dangerBox, dangerRect);
+            }
+        } else {
+            placeBox(dangerBox, dangerRect);
+        }
         
         // 3. Линия укуса (legacy) — скрываем, т.к. используем right-collider полигон.
         placeLine(biteLine, biteX);
@@ -692,6 +845,30 @@ class Renderer {
 
     endBiteHold() {
         this.penguinRig.endBiteHold();
+    }
+
+    // Анимация "+1" / "+2" при засчитанном укусе монетки
+    showFloatingCoinBonus(x, y, amount) {
+        const container = document.getElementById('game-area');
+        if (!container) return;
+        const num = Math.max(1, Math.min(99, Math.floor(amount || 1)));
+        const text = `+${num}`;
+        const el = document.createElement('div');
+        el.className = 'floating-coin-bonus';
+        el.textContent = text;
+        el.setAttribute('aria-hidden', 'true');
+        if (typeof x === 'number' && typeof y === 'number') {
+            el.style.left = `${x}px`;
+            el.style.top = `${y}px`;
+        } else {
+            const rect = container.getBoundingClientRect();
+            el.style.left = `${rect.width / 2}px`;
+            el.style.top = `${rect.height / 2}px`;
+        }
+        container.appendChild(el);
+        window.setTimeout(() => {
+            try { el.remove(); } catch (e) { /* ignore */ }
+        }, 850);
     }
 
     // ========== АНИМАЦИЯ КРУГА (независимая) ==========

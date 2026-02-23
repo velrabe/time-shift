@@ -27,9 +27,10 @@ class Game {
             error: null
         };
         this._leaderboardRefreshInFlight = null;
-        this._pausedByLeaderboard = false;
-        this._pausedByPerks = false;
-        this._pauseStartTime = null; // Время начала паузы для лидерборда
+        this.middleOverlayId = null; // start | gameover
+        this.topOverlayId = null; // pause | leaderboard | perks | language
+        this._pauseStartTime = null;
+        this._pausedByOverlay = false;
         
         this.animationFrameId = null;
         this.lastUpdateTime = 0;
@@ -81,10 +82,14 @@ class Game {
         // Имя игрока (случайный ник, если ещё нет)
         await this.playerNameManager.ensurePlayerNameInitialized();
         
-        // Загрузка best score
+        // Загрузка best score: берём максимум из облака и локального хранилища
         const gpBestScore = this.gamePush.getBestScore();
         const localBestScore = this.storage.getLocalBestScore();
         this.bestScore = Math.max(gpBestScore, localBestScore);
+        // Если локальный рекорд выше облачного — синхронизируем в облако, чтобы ранг и лидерборд были корректны
+        if (localBestScore > gpBestScore && this.bestScore > 0) {
+            await this.gamePush.saveBestScore(this.bestScore);
+        }
 
         const localProgression = this.storage.loadProgression();
         const cloudProgression = this.gamePush.getProgression();
@@ -146,22 +151,33 @@ class Game {
         window.gameInstance = this;
 
         // События паузы/резюма
-        eventBus.on('PAUSE', () => {
-            this.pause();
+        eventBus.on('PAUSE', (meta) => {
+            if (meta?.source === 'game') return;
+            this.openPauseOverlay();
         });
 
-        eventBus.on('RESUME', () => {
-            this.resume();
+        eventBus.on('RESUME', (meta) => {
+            if (meta?.source === 'game') return;
+            if (this.getActiveOverlayId() === 'pause') {
+                this.closePauseOverlay();
+            }
         });
 
         // Game over по физической коллизии (любой объект касается челюсти при закрытом рте)
-        eventBus.on('PENGUIN_COLLISION', (_data) => {
-            if (this.state !== 'RUNNING') return;
+        eventBus.on('PENGUIN_COLLISION', (data) => {
+            this.resetCoinRushStreak();
             if (this.absorbHitWithShield()) {
+                const circle = data?.circle;
+                if (circle && circle instanceof HTMLElement) {
+                    circle.classList.add('passed', 'consumed');
+                    const img = circle.querySelector('img.food-img');
+                    if (img) img.style.opacity = '0';
+                }
                 this.updateUI();
                 return;
             }
-            this.beginDeath({ reason: 'PENGUIN_COLLISION' });
+            if (this.state !== 'RUNNING') return;
+            this.beginDeath({ reason: data?.reason || 'PENGUIN_COLLISION' });
         });
 
         // Счёт и streak от реально съеденных объектов
@@ -170,15 +186,6 @@ class Game {
 
             // +5 очков за съеденную еду
             this.score = (this.score || 0) + 5;
-
-            // Прогресс Coin Rush: 10 -> 20 -> 30 ... за один ран
-            if (!this.coinRushActive) {
-                this.coinRushProgress += 5;
-                // Автоматическая активация Coin Rush при достижении цели
-                if (this.coinRushProgress >= this.coinRushTarget) {
-                    this.activateCoinRush();
-                }
-            }
 
             // Бонус Coin Income: +N монет за каждые 10 очков
             const incomeBonus = this.perks?.getCoinIncomeBonusPer10Score?.() || 0;
@@ -194,12 +201,35 @@ class Game {
             this.updateUI();
         });
 
-        eventBus.on('COIN_BITTEN', () => {
+        eventBus.on('COIN_SWALLOWED', () => {
             if (this.state !== 'RUNNING') return;
-            let amount = 1;
-            if (this.perks?.hasDoubleBite?.()) amount += 1;
+            // Проглоченная монета: обычные очки как за еду, но streak монет обнуляем.
+            this.score = (this.score || 0) + 5;
+            this.resetCoinRushStreak();
+            const incomeBonus = this.perks?.getCoinIncomeBonusPer10Score?.() || 0;
+            if (incomeBonus > 0 && this.score > 0 && this.score % 10 === 0) {
+                this.perks.addCoins(incomeBonus);
+                this.runCoinsEarned += incomeBonus;
+                this.persistProgressionSoon();
+            }
+            this.updateUI();
+        });
+
+        eventBus.on('COIN_BITTEN', (data) => {
+            if (this.state !== 'RUNNING') return;
+            let amount = 100;
+            if (this.perks?.hasDoubleBite?.()) amount += 100;
             this.perks.addCoins(amount);
             this.runCoinsEarned += amount;
+            if (!this.coinRushActive) {
+                this.coinRushProgress = Math.max(0, (this.coinRushProgress || 0) + 1);
+                if (this.coinRushProgress >= (this.coinRushTarget || 10)) {
+                    this.activateCoinRush();
+                }
+            }
+            const x = typeof data?.x === 'number' ? data.x : undefined;
+            const y = typeof data?.y === 'number' ? data.y : undefined;
+            this.renderer?.showFloatingCoinBonus?.(x, y, amount);
             this.persistProgressionSoon();
             this.updateUI();
         });
@@ -208,25 +238,34 @@ class Game {
         document.addEventListener('keydown', (e) => {
             const key = e.key;
             if (key === 'Escape') {
-                if (this.renderer?.ui?.isPerksModalOpen?.()) {
+                const activeOverlay = this.getActiveOverlayId();
+                if (activeOverlay) {
                     e.preventDefault();
-                    this.closePerksModal();
-                    return;
-                }
-                // Если открыта таблица лидеров — закрываем её и продолжаем игру
-                if (this.renderer?.isLeaderboardModalOpen?.()) {
-                    e.preventDefault();
-                    this.closeLeaderboardModal();
+                    if (['pause', 'language', 'leaderboard', 'perks'].includes(activeOverlay)) {
+                        this.closeTopOverlay();
+                    }
                     return;
                 }
                 if (this.state === 'RUNNING') {
                     e.preventDefault();
-                    this.pause();
+                    this.openPauseOverlay();
                 }
                 return;
             }
 
             if (this.state !== 'RUNNING') return;
+
+            if (key === '1') {
+                e.preventDefault();
+                this.useSlowDown();
+                return;
+            }
+
+            if (key === '2') {
+                e.preventDefault();
+                this.useShield();
+                return;
+            }
 
             if (key === ' ' || key === 'Spacebar') {
                 // Не даём автоповтору клавиши превращать укус в "авто-режим"
@@ -265,7 +304,6 @@ class Game {
         const pauseRestartBtn = document.getElementById('pause-restart-btn');
         if (pauseRestartBtn) {
             pauseRestartBtn.addEventListener('click', () => {
-                this.renderer?.hidePauseScreen?.();
                 this.restart();
             });
         }
@@ -278,24 +316,25 @@ class Game {
         const pauseLanguageBtn = document.getElementById('pause-language-btn');
         if (pauseLanguageBtn) {
             pauseLanguageBtn.addEventListener('click', () => {
-                this.renderer?.showLanguageScreen?.();
+                this.openLanguageOverlay();
             });
         }
 
         const languageBackBtn = document.getElementById('language-back-btn');
         if (languageBackBtn) {
             languageBackBtn.addEventListener('click', () => {
-                this.renderer?.hideLanguageScreen?.();
+                this.closeLanguageOverlay();
             });
         }
 
-        ['lang-en', 'lang-ru', 'lang-es'].forEach((id) => {
+        ['lang-en', 'lang-ru'].forEach((id) => {
             const btn = document.getElementById(id);
             if (btn) {
                 btn.addEventListener('click', () => {
-                    document.querySelectorAll('.pause-btn--lang').forEach((b) => b.classList.remove('pause-btn--lang-active'));
-                    btn.classList.add('pause-btn--lang-active');
-                    /* Локализация — позже */
+                    const lang = btn.dataset.lang || 'en';
+                    if (window.I18N && typeof window.I18N.setLanguage === 'function') {
+                        window.I18N.setLanguage(lang);
+                    }
                 });
             }
         });
@@ -316,10 +355,12 @@ class Game {
             playBtn.addEventListener('click', () => this.start());
         }
 
-        // Buy Slow / Buy Shield на стартовом экране
-        document.querySelectorAll('.start-buy-btn').forEach((btn) => {
-            btn.addEventListener('click', (e) => {
+        // Buy Slow / Buy Shield на стартовом экране — кликабельна вся карточка .start-spell-btn
+        document.querySelectorAll('.start-spell-btn').forEach((card) => {
+            card.addEventListener('click', (e) => {
                 e.stopPropagation();
+                const btn = card.querySelector('.start-buy-btn');
+                if (!btn || btn.disabled) return;
                 const spell = btn.dataset?.spell;
                 if (spell === 'slow' && this.perks?.buySlow?.()) {
                     this.persistProgressionSoon();
@@ -435,22 +476,72 @@ class Game {
             });
         }
 
-        // Клик по строке «You» в лидерборде — редактирование имени
+        // Клик по строке «You» в лидерборде — редактирование имени через игровой оверлей
         const lbMe = document.getElementById('leaderboard-me');
-        if (lbMe) {
-            lbMe.addEventListener('click', async (e) => {
+        const renameModal = document.getElementById('rename-modal');
+        const renameInput = document.getElementById('rename-input');
+        const renameSaveBtn = document.getElementById('rename-save-btn');
+        const renameCloseBtn = document.getElementById('rename-close-btn');
+
+        const closeRenameModal = () => {
+            if (!renameModal) return;
+            renameModal.classList.add('hidden');
+        };
+
+        const openRenameModal = () => {
+            if (!renameModal || !renameInput) return;
+            const current = this.playerNameManager.getCurrentName() || '';
+            renameInput.value = current;
+            renameModal.classList.remove('hidden');
+            renameInput.focus();
+            renameInput.select();
+        };
+
+        const applyRename = async () => {
+            if (!renameInput) return;
+            const next = renameInput.value;
+            try {
+                await this.playerNameManager.setCustomName(next);
+                this.playerNameManager.markHintSeen();
+                this.refreshLeaderboard('edit');
+                closeRenameModal();
+            } catch (err) {
+                if (err && err.code === 'INVALID_NAME') {
+                    // Пока что оставляем системное сообщение об ошибке как fallback.
+                    window.alert('Name must be 2-20 letters/numbers.');
+                }
+            }
+        };
+
+        if (lbMe && renameModal && renameInput && renameSaveBtn && renameCloseBtn) {
+            lbMe.addEventListener('click', (e) => {
                 e.preventDefault();
-                const current = this.playerNameManager.getCurrentName() || '';
-                const next = window.prompt('Enter your name', current);
-                if (next == null) return;
-                try {
-                    await this.playerNameManager.setCustomName(next);
-                    this.playerNameManager.markHintSeen();
-                    this.refreshLeaderboard('edit');
-                } catch (err) {
-                    if (err && err.code === 'INVALID_NAME') {
-                        window.alert('Name must be 2-20 letters/numbers.');
-                    }
+                openRenameModal();
+            });
+
+            renameSaveBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                applyRename();
+            });
+
+            renameCloseBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                closeRenameModal();
+            });
+
+            renameModal.addEventListener('click', (e) => {
+                if (e.target === renameModal) {
+                    closeRenameModal();
+                }
+            });
+
+            renameInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    applyRename();
+                } else if (e.key === 'Escape') {
+                    e.preventDefault();
+                    closeRenameModal();
                 }
             });
         }
@@ -496,7 +587,7 @@ class Game {
         document.addEventListener('visibilitychange', () => {
             if (document.hidden) {
                 if (this.state === 'RUNNING') {
-                    this.pause();
+                    this.openPauseOverlay();
                 }
             }
         });
@@ -519,7 +610,7 @@ class Game {
         this.startInProgress = true;
         try {
             // Скрываем стартовый экран
-            this.renderer.hideStartScreen();
+            this.hideStartScreenOverlay();
 
             // Обновляем лидерборд при старте новой игры (стартовый синк)
             this.refreshLeaderboard('start');
@@ -558,6 +649,8 @@ class Game {
         await this.renderer.showCountdown();
         
         this.state = 'RUNNING';
+        this._pausedByOverlay = false;
+        this._pauseStartTime = null;
         this.lastUpdateTime = performance.now();
         this.lastSnapshotTime = Date.now();
         this.userInteracted = true; // Помечаем как взаимодействовал (клик на PLAY)
@@ -652,13 +745,20 @@ class Game {
 
     // Запуск "смерти" с задержкой (чтобы показать анимацию столкновения)
     beginDeath(meta = null) {
+        // Дублирующий safeguard: если щит активен, любой вход в смерть должен быть поглощён.
+        if (this.absorbHitWithShield()) {
+            this.updateUI();
+            return;
+        }
         if (this.deathInProgress) return;
         if (this.state !== 'RUNNING') return;
         this.deathInProgress = true;
         this.state = 'DYING';
-        // Важно: при Game Over укус НЕ проигрываем, но даём ленте и объекту
-        // продолжить движение ещё немного. Останавливаем только анимации укуса
-        // и сразу переключаем пингвина в состояние проигрыша.
+        // Анимация перелома зубов только при реальной смерти (щит не активен).
+        const timingJawHit = meta?.reason === 'TIMING_JAW_HIT_TOP' || meta?.reason === 'TIMING_JAW_HIT_BOT';
+        if (timingJawHit) {
+            this.renderer?.penguinRig?.triggerTimingTeethHitFx?.();
+        }
         try {
             this.renderer?.stopAllBites?.();
             // Переключаем изображения пингвина на состояние проигрыша
@@ -705,7 +805,7 @@ class Game {
             coinRushProgress: Math.max(0, this.coinRushProgress || 0),
             coinRushTarget: Math.max(10, this.coinRushTarget || 10),
             coinRushActive: !!this.coinRushActive,
-            spellShopCosts: { ...(this.perks?.spellShopCosts || { slow: 10, shield: 5 }) }
+            spellShopCosts: this.perks ? { ...this.perks.spellShopCosts } : undefined
         };
     }
 
@@ -847,7 +947,8 @@ class Game {
         if (Date.now() < (this.coinRushEndsAt || 0)) return;
         this.coinRushActive = false;
         this.coinRushEndsAt = 0;
-        this.renderer?.refreshVisibleItemTypes?.();
+        // Не вызываем refreshVisibleItemTypes: уже заспавненные монеты остаются монетами,
+        // новые объекты будут создаваться как еда/монета по value в ensureFoodCircle.
         this.updateUI();
     }
 
@@ -855,46 +956,23 @@ class Game {
         return !!this.coinRushActive;
     }
 
-    // Пауза
+    resetCoinRushStreak() {
+        if ((this.coinRushProgress || 0) === 0) return;
+        this.coinRushProgress = 0;
+    }
+
+    // Пауза (повторное нажатие при открытой паузе — закрывает её)
     pause() {
-        if (this.state !== 'RUNNING') return;
-        
-        this.state = 'PAUSED';
-        // Важно: чтобы после паузы таймер не "догонял" пропущенные тики пачкой
-        if (this.timer) this.timer.lastStepTime = 0;
-        // Паузим музыку
-        this.audio.pause();
-        
-        if (this.animationFrameId) {
-            cancelAnimationFrame(this.animationFrameId);
-            this.animationFrameId = null;
+        if (this.getActiveOverlayId() === 'pause') {
+            this.closePauseOverlay();
+            return;
         }
-        
-        this.renderer.showPauseScreen();
-        this.saveSnapshot();
-        this.gamePush.saveSnapshot(this.buildSnapshotPayload());
-        eventBus.emit('PAUSE');
+        this.openPauseOverlay();
     }
 
     // Резюм
     async resume() {
-        if (this.state !== 'PAUSED') return;
-        
-        this.renderer.hidePauseScreen();
-        
-        // Обратный отсчет
-        this.state = 'COUNTDOWN';
-        await this.renderer.showCountdown();
-        
-        this.state = 'RUNNING';
-        // Важно: чтобы после countdown таймер не "догонял" время, проведённое в паузе
-        if (this.timer) this.timer.lastStepTime = 0;
-        this.lastUpdateTime = performance.now();
-        this.deathInProgress = false;
-        // Возобновляем музыку
-        this.audio.play();
-        this.gameLoop();
-        eventBus.emit('RESUME');
+        this.closePauseOverlay();
     }
 
     // Game Over
@@ -930,7 +1008,7 @@ class Game {
             Promise.resolve(this.gamePush.saveBestScore(score)).then(() => this.refreshLeaderboard('bestScore'));
         }
         
-        this.renderer.showGameOverScreen(score, this.bestScore, this.runCoinsEarned || 0);
+        this.showGameOverOverlay(score, this.bestScore, this.runCoinsEarned || 0);
         eventBus.emit('DEATH');
         
         // Очистка снапшота
@@ -949,7 +1027,7 @@ class Game {
         
         // В новой механике "Continue" просто перезапускает забег.
         // (Second life тратится, но угроз/окон больше нет.)
-        this.renderer.hideGameOverScreen();
+        this.hideGameOverOverlay();
         this.restart();
         this.start();
     }
@@ -957,6 +1035,8 @@ class Game {
     // Рестарт
     restart() {
         this.state = 'MENU';
+        this._pausedByOverlay = false;
+        this._pauseStartTime = null;
         this.timer.reset();
         this.perks.reset();
         this.audio.reset();
@@ -978,11 +1058,13 @@ class Game {
         this.score = 0;
         this.updateUI();
         
-        this.renderer.hideGameOverScreen();
-        this.renderer.hidePauseScreen();
+        this.hideGameOverOverlay();
+        while (this.topOverlayId) {
+            this.closeTopOverlay();
+        }
         
         // Показываем стартовый экран
-        this.renderer.showStartScreen(this.getGameState());
+        this.showStartScreenOverlay();
     }
 
     // Сохранение снапшота
@@ -1100,8 +1182,9 @@ class Game {
             } finally {
                 this.leaderboardData.loading = false;
                 this._leaderboardRefreshInFlight = null;
+                this.leaderboardData.displayBestScore = this.bestScore;
 
-                // Если модалка сейчас открыта — перерисуем её свежими данными
+                this.updateUI();
                 if (this.renderer?.isLeaderboardModalOpen?.()) {
                     this.renderer.renderLeaderboardModal(this.leaderboardData);
                 }
@@ -1111,78 +1194,212 @@ class Game {
         return this._leaderboardRefreshInFlight;
     }
 
-    pauseForLeaderboard() {
-        if (this.state !== 'RUNNING') return;
-        this._pausedByLeaderboard = true;
-        this._pauseStartTime = performance.now(); // Сохраняем время начала паузы
-        this.state = 'PAUSED';
+    getActiveOverlayId() {
+        return this.topOverlayId || this.middleOverlayId || null;
+    }
 
-        // Останавливаем игровой цикл (таймер/лента/коллизии)
+    _getOverlayElement(overlayId) {
+        const map = {
+            pause: 'pause-screen',
+            language: 'language-screen',
+            leaderboard: 'leaderboard-modal',
+            perks: 'perks-modal',
+            gameover: 'game-over-screen',
+            start: 'start-screen'
+        };
+        const id = map[overlayId];
+        return id ? document.getElementById(id) : null;
+    }
+
+    _applyOverlayStackOrder() {
+        const ids = ['pause', 'language', 'leaderboard', 'perks', 'gameover', 'start'];
+        ids.forEach((id) => {
+            const el = this._getOverlayElement(id);
+            if (!el) return;
+            el.dataset.overlayActive = '0';
+            el.style.zIndex = '';
+        });
+
+        if (this.middleOverlayId) {
+            const middleEl = this._getOverlayElement(this.middleOverlayId);
+            if (middleEl) {
+                middleEl.style.zIndex = '210';
+                middleEl.dataset.overlayActive = this.topOverlayId ? '0' : '1';
+            }
+        }
+
+        if (this.topOverlayId) {
+            const topEl = this._getOverlayElement(this.topOverlayId);
+            if (topEl) {
+                topEl.style.zIndex = '220';
+                topEl.dataset.overlayActive = '1';
+            }
+        }
+    }
+
+    _pauseGameplayForOverlay() {
+        if (this.state !== 'RUNNING') return;
+        this._pausedByOverlay = true;
+        this._pauseStartTime = performance.now();
+        this.state = 'PAUSED';
+        if (this.timer) this.timer.lastStepTime = 0;
+        this.audio.pause();
         if (this.animationFrameId) {
             cancelAnimationFrame(this.animationFrameId);
             this.animationFrameId = null;
         }
-
-        // Стопаем активные анимации и звук
-        try {
-            if (this.timer) this.timer.lastStepTime = 0;
-            this.audio.pause();
-            this.renderer?.stopCircleAnimation?.();
-            this.renderer?.stopStripAnimation?.();
-            // Сохраняем текущее время обновления ленты, чтобы не "догонять" пропущенное время
-            if (this.renderer && typeof this.renderer.pauseBeltUpdate === 'function') {
-                this.renderer.pauseBeltUpdate();
-            }
-        } catch (e) {
-            // ignore
-        }
-
-        // Уведомляем другие системы о паузе
-        eventBus.emit('PAUSE');
+        this.renderer?.stopCircleAnimation?.();
+        this.renderer?.stopStripAnimation?.();
+        this.renderer?.pauseBeltUpdate?.();
+        eventBus.emit('PAUSE', { source: 'game' });
     }
 
-    resumeFromLeaderboard() {
-        if (this.state !== 'PAUSED') return;
-        if (!this._pausedByLeaderboard) return;
+    _resumeGameplayAfterOverlay() {
+        if (this.state !== 'PAUSED' || !this._pausedByOverlay) return;
+        if (this.topOverlayId || this.middleOverlayId) return;
 
-        this._pausedByLeaderboard = false;
-        // Не показываем countdown — игра продолжается сразу
+        this._pausedByOverlay = false;
         this.state = 'RUNNING';
         if (this.timer) this.timer.lastStepTime = 0;
         this.lastUpdateTime = performance.now();
-        
-        // Корректируем время обновления ленты, чтобы не "догонять" пропущенное время
-        if (this.renderer && typeof this.renderer.resumeBeltUpdate === 'function' && this._pauseStartTime) {
+        if (this.renderer?.resumeBeltUpdate && this._pauseStartTime) {
             const pauseDuration = performance.now() - this._pauseStartTime;
             this.renderer.resumeBeltUpdate(pauseDuration);
         }
         this._pauseStartTime = null;
-        
         this.audio.play();
         this.gameLoop();
+        eventBus.emit('RESUME', { source: 'game' });
+    }
+
+    _openMiddleOverlay(overlayId, { show = true } = {}) {
+        if (this.middleOverlayId === overlayId) return false;
+        if (this.middleOverlayId) {
+            this._closeMiddleOverlay(this.middleOverlayId, { hide: true, resumeWhenEmpty: false });
+        }
+        this._pauseGameplayForOverlay();
+        this.middleOverlayId = overlayId;
+        if (show) {
+            switch (overlayId) {
+                case 'start': this.renderer?.showStartScreen?.(this.getGameState()); break;
+                case 'gameover': this.renderer?.showGameOverScreen?.(this.score || 0, this.bestScore || 0, this.runCoinsEarned || 0); break;
+                default: break;
+            }
+        }
+        this._applyOverlayStackOrder();
+        return true;
+    }
+
+    _closeMiddleOverlay(overlayId, { hide = true, resumeWhenEmpty = true } = {}) {
+        if (this.middleOverlayId !== overlayId) return false;
+        this.middleOverlayId = null;
+        if (hide) {
+            switch (overlayId) {
+                case 'gameover': this.renderer?.hideGameOverScreen?.(); break;
+                case 'start': this.renderer?.hideStartScreen?.(); break;
+                default: break;
+            }
+        }
+        this._applyOverlayStackOrder();
+        if (resumeWhenEmpty) this._resumeGameplayAfterOverlay();
+        return true;
+    }
+
+    _openTopOverlay(overlayId, { show = true, replace = true } = {}) {
+        if (this.topOverlayId === overlayId) return false;
+        this._pauseGameplayForOverlay();
+        if (replace && this.topOverlayId) {
+            this._closeTopOverlay(this.topOverlayId, { hide: true, resumeWhenEmpty: false });
+        }
+        this.topOverlayId = overlayId;
+        if (show) {
+            switch (overlayId) {
+                case 'pause': this.renderer?.showPauseScreen?.(); break;
+                case 'language': this.renderer?.ui?.showLanguageScreen?.(); break;
+                case 'leaderboard': this.renderer?.showLeaderboardModal?.(); break;
+                case 'perks': this.renderer?.ui?.showPerksModal?.(); break;
+                default: break;
+            }
+        }
+        this._applyOverlayStackOrder();
+        return true;
+    }
+
+    _closeTopOverlay(overlayId, { hide = true, resumeWhenEmpty = true } = {}) {
+        if (this.topOverlayId !== overlayId) return false;
+        this.topOverlayId = null;
+        if (hide) {
+            switch (overlayId) {
+                case 'pause': this.renderer?.hidePauseScreen?.(); break;
+                case 'language': this.renderer?.ui?.hideLanguageScreen?.(); break;
+                case 'leaderboard': this.renderer?.hideLeaderboardModal?.(); break;
+                case 'perks': this.renderer?.ui?.hidePerksModal?.(); break;
+                default: break;
+            }
+        }
+        this._applyOverlayStackOrder();
+        if (resumeWhenEmpty) this._resumeGameplayAfterOverlay();
+        return true;
+    }
+
+    closeTopOverlay() {
+        if (!this.topOverlayId) return false;
+        return this._closeTopOverlay(this.topOverlayId);
+    }
+
+    openPauseOverlay() {
+        const wasRunning = this.state === 'RUNNING';
+        const opened = this._openTopOverlay('pause');
+        if (opened && wasRunning) {
+            this.saveSnapshot();
+            this.gamePush.saveSnapshot(this.buildSnapshotPayload());
+        }
+    }
+
+    closePauseOverlay() {
+        this._closeTopOverlay('pause');
+    }
+
+    openLanguageOverlay() {
+        this._openTopOverlay('language');
+    }
+
+    closeLanguageOverlay() {
+        if (this._closeTopOverlay('language')) {
+            // Возвращаемся в экран паузы как в "родительское" меню
+            this._openTopOverlay('pause');
+        }
+    }
+
+    showStartScreenOverlay() {
+        this._openMiddleOverlay('start');
+    }
+
+    hideStartScreenOverlay() {
+        if (!this._closeMiddleOverlay('start', { hide: true, resumeWhenEmpty: false })) {
+            this.renderer?.hideStartScreen?.();
+        }
+    }
+
+    showGameOverOverlay(score, bestScore, coins) {
+        this.renderer?.showGameOverScreen?.(score, bestScore, coins);
+        this._openMiddleOverlay('gameover', { show: false });
+    }
+
+    hideGameOverOverlay() {
+        this.renderer?.hideGameOverScreen?.();
+        this._closeMiddleOverlay('gameover', { hide: false, resumeWhenEmpty: false });
     }
 
     openLeaderboardModal() {
-        // Ставим игру на паузу СРАЗУ, если она шла (до асинхронных операций)
-        if (this.state === 'RUNNING') {
-            this.pauseForLeaderboard();
-        }
-
-        // Подтягиваем свежие данные (не блокируем открытие)
         this.refreshLeaderboard('open');
-
-        // Рендерим то, что есть в кеше (или fallback)
+        this.leaderboardData.displayBestScore = this.bestScore;
         this.renderer?.renderLeaderboardModal?.(this.leaderboardData);
-        this.renderer?.showLeaderboardModal?.();
+        this._openTopOverlay('leaderboard');
     }
 
     closeLeaderboardModal() {
-        this.renderer?.hideLeaderboardModal?.();
-
-        // Если пауза была именно из-за лидерборда — продолжаем игру
-        if (this._pausedByLeaderboard) {
-            this.resumeFromLeaderboard();
-        }
+        this._closeTopOverlay('leaderboard');
     }
 
     mergeProgression(localProgression, cloudProgression) {
@@ -1207,22 +1424,9 @@ class Game {
         }, 1500);
     }
 
-    pauseForPerks() {
-        if (this.state !== 'RUNNING') return;
-        this._pausedByPerks = true;
-        this.pauseForLeaderboard();
-    }
-
-    resumeFromPerks() {
-        if (!this._pausedByPerks) return;
-        this._pausedByPerks = false;
-        this.resumeFromLeaderboard();
-    }
-
     openPerksModal() {
-        if (this.state === 'RUNNING') this.pauseForPerks();
         this.renderer?.ui?.renderPerksModal?.(this.getGameState(), this.perks.getCatalog());
-        this.renderer?.ui?.showPerksModal?.();
+        this._openTopOverlay('perks');
 
         this.renderer?.ui?.bindPerksModalActions?.({
             onClose: () => this.closePerksModal(),
@@ -1231,8 +1435,7 @@ class Game {
     }
 
     closePerksModal() {
-        this.renderer?.ui?.hidePerksModal?.();
-        this.resumeFromPerks();
+        this._closeTopOverlay('perks');
     }
 
     upgradePerk(perkId) {

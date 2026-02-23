@@ -532,6 +532,40 @@ body {
     color: #ffffff;
 }
 
+/* Всплывающая надпись +1 при укусе монетки */
+.floating-coin-bonus {
+    position: absolute;
+    left: 0;
+    top: 0;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    z-index: 100;
+    font-family: "Rubik", sans-serif;
+    font-weight: 800;
+    font-size: calc(28px * var(--ui-scale));
+    line-height: 1;
+    color: #ffd54f;
+    text-shadow:
+        0 0 4px rgba(0, 0, 0, 0.6),
+        0 1px 2px rgba(0, 0, 0, 0.8);
+    animation: floating-coin-bonus 0.85s ease-out forwards;
+}
+
+@keyframes floating-coin-bonus {
+    0% {
+        transform: translate(-50%, -50%) translateY(0) scale(0.6);
+        opacity: 1;
+    }
+    20% {
+        transform: translate(-50%, -50%) translateY(-8px) scale(1.15);
+        opacity: 1;
+    }
+    100% {
+        transform: translate(-50%, -50%) translateY(-52px) scale(1);
+        opacity: 0;
+    }
+}
+
 .ui-btn {
     background: linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(231, 241, 255, 0.88));
     border: 2px solid rgba(255, 255, 255, 0.60);
@@ -724,15 +758,14 @@ body {
 
 .number-circle {
     position: relative;
-    /* Фиксированный слот: движение ленты использует постоянный шаг.
-       Чуть расширяем слот и увеличиваем зазор, чтобы объекты не липли. */
-    width: calc(var(--circle-size) * 2.6);
+    /* Ширина задается из JS по реальной ширине объекта. */
+    width: auto;
     height: calc(var(--circle-size) * 1.8);
     /* Убираем круглое обрамление */
     border-radius: 0;
-    /* Чуть больший горизонтальный gap между объектами */
-    margin: 0 6px;
-    transition: all 0.2s;
+    /* Базовые margin, фактический gap задается из JS (рандомный margin-right). */
+    margin: 0;
+    transition: opacity 0.2s;
     flex-shrink: 0;
     display: flex;
     align-items: center;
@@ -866,6 +899,10 @@ body {
 }
 
 .penguin-layer--eye {
+    z-index: 2;
+}
+
+.penguin-layer--left-collider {
     z-index: 2;
 }
 
@@ -1090,7 +1127,7 @@ body {
     line-height: 100%;
 }
 
-/* Overlay Screens */
+/* Overlay Screens: фон пропускает клики к HUD (лидерборд, перки, пауза) */
 .overlay-screen {
     position: absolute;
     top: 0;
@@ -1103,11 +1140,22 @@ body {
     justify-content: center;
     z-index: 200;
     backdrop-filter: none;
+    pointer-events: none;
+}
+.overlay-screen > * {
+    pointer-events: auto;
+}
+.overlay-screen[data-overlay-active="0"] > * {
+    pointer-events: none !important;
 }
 
-/* Pause overlay */
+/* Все оверлеи: прозрачный фон, затухание сцены — в правилах :has() выше */
 #pause-screen.overlay-screen,
-#language-screen.overlay-screen {
+#language-screen.overlay-screen,
+#perks-modal.overlay-screen,
+#leaderboard-modal.overlay-screen,
+#game-over-screen.overlay-screen,
+.start-game-overlay.overlay-screen {
     background: transparent;
 }
 
@@ -1214,28 +1262,34 @@ body {
     opacity: 1;
 }
 
-/* Game Over: dim scene to 30% except popup, pause, sound, score chip */
+/* Единое затухание фона для всех оверлеев: пауза, язык, перки, лидерборд, game over, старт */
 #game-container:has(#game-over-screen:not(.hidden)) #game-area,
 #game-container:has(#start-screen:not(.hidden)) #game-area,
-#game-container:has(#pause-screen:not(.hidden)) #game-area {
+#game-container:has(#pause-screen:not(.hidden)) #game-area,
+#game-container:has(#language-screen:not(.hidden)) #game-area,
+#game-container:has(#perks-modal:not(.hidden)) #game-area,
+#game-container:has(#leaderboard-modal:not(.hidden)) #game-area {
     opacity: 0.3;
 }
 
 #game-container:has(#game-over-screen:not(.hidden)) #controls,
 #game-container:has(#start-screen:not(.hidden)) #controls,
-#game-container:has(#pause-screen:not(.hidden)) #controls {
+#game-container:has(#pause-screen:not(.hidden)) #controls,
+#game-container:has(#language-screen:not(.hidden)) #controls,
+#game-container:has(#perks-modal:not(.hidden)) #controls,
+#game-container:has(#leaderboard-modal:not(.hidden)) #controls {
     opacity: 0.3;
 }
 
 #game-container:has(#game-over-screen:not(.hidden)) #streak-progress,
 #game-container:has(#start-screen:not(.hidden)) #streak-progress,
-#game-container:has(#pause-screen:not(.hidden)) #streak-progress {
+#game-container:has(#pause-screen:not(.hidden)) #streak-progress,
+#game-container:has(#language-screen:not(.hidden)) #streak-progress,
+#game-container:has(#perks-modal:not(.hidden)) #streak-progress,
+#game-container:has(#leaderboard-modal:not(.hidden)) #streak-progress {
     opacity: 0.3;
 }
 
-#game-over-screen.overlay-screen {
-    background: transparent;
-}
 
 .overlay-screen.hidden {
     display: none;
@@ -1420,14 +1474,15 @@ body {
     height: calc(56px * var(--ui-scale));
 }
 
-/* Leaderboard modal */
-#leaderboard-modal.lb-overlay {
+/* Leaderboard / Perks / Rename: фон как у паузы (прозрачный + затухание через :has()) */
+#leaderboard-modal.lb-overlay,
+#perks-modal.perks-overlay,
+#rename-modal.rename-overlay {
     background: transparent;
 }
 
-/* Perks modal */
-#perks-modal.perks-overlay {
-    background: rgba(230, 242, 255, 0.88);
+#rename-modal.rename-overlay {
+    z-index: 220;
 }
 
 .perks-popup {
@@ -1545,6 +1600,89 @@ body {
     padding: calc(24px * var(--ui-scale));
     background: #ffffff;
     border-radius: calc(24px * var(--ui-scale));
+}
+
+/* Rename player modal */
+.rename-popup {
+    width: calc(480px * var(--ui-scale));
+    max-width: 94vw;
+    display: flex;
+    flex-direction: column;
+    gap: calc(16px * var(--ui-scale));
+    padding: calc(24px * var(--ui-scale));
+    border-radius: calc(24px * var(--ui-scale));
+    background: rgba(255, 255, 255, 0.96);
+    box-shadow: 0 calc(8px * var(--ui-scale)) calc(48px * var(--ui-scale)) rgba(62, 113, 181, 0.24);
+}
+
+.rename-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: calc(12px * var(--ui-scale));
+}
+
+.rename-title {
+    margin: 0;
+    font-family: "Rubik", sans-serif;
+    font-weight: 800;
+    font-size: calc(40px * var(--ui-scale));
+    line-height: 1;
+    color: #546D8A;
+}
+
+.rename-close-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border: none;
+    background: none;
+    cursor: pointer;
+    color: #546D8A;
+}
+
+.rename-close-btn img {
+    width: calc(32px * var(--ui-scale));
+    height: calc(32px * var(--ui-scale));
+}
+
+.rename-body {
+    display: flex;
+    flex-direction: column;
+    gap: calc(12px * var(--ui-scale));
+}
+
+.rename-label {
+    font-family: "Rubik", sans-serif;
+    font-size: calc(16px * var(--ui-scale));
+    color: #546D8A;
+}
+
+.rename-input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: calc(10px * var(--ui-scale)) calc(12px * var(--ui-scale));
+    border-radius: calc(12px * var(--ui-scale));
+    border: 1px solid rgba(142, 162, 192, 0.8);
+    font-family: "Rubik", sans-serif;
+    font-size: calc(18px * var(--ui-scale));
+    color: #0E2443;
+    outline: none;
+}
+
+.rename-input::placeholder {
+    color: rgba(84, 109, 138, 0.6);
+}
+
+.rename-input:focus {
+    border-color: #4A9AFF;
+    box-shadow: 0 0 0 1px rgba(74, 154, 255, 0.4);
+}
+
+.rename-save-btn {
+    align-self: flex-start;
+    margin-top: calc(4px * var(--ui-scale));
 }
 
 .lb-header {
@@ -1818,10 +1956,7 @@ body {
     }
 }
 
-/* Start Game Screen */
-.start-game-overlay.overlay-screen {
-    background: transparent;
-}
+/* Start Game Screen — фон задан в общем блоке оверлеев выше */
 
 .start-game-popup {
     width: calc(600px * var(--ui-scale));

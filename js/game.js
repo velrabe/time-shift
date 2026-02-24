@@ -183,6 +183,9 @@ class Game {
         // Счёт и streak от реально съеденных объектов
         eventBus.on('FOOD_EATEN', () => {
             if (this.state !== 'RUNNING') return;
+            if (this.audio && typeof this.audio.playSwallow === 'function') {
+                this.audio.playSwallow();
+            }
 
             // +5 очков за съеденную еду
             this.score = (this.score || 0) + 5;
@@ -203,6 +206,9 @@ class Game {
 
         eventBus.on('COIN_SWALLOWED', () => {
             if (this.state !== 'RUNNING') return;
+            if (this.audio && typeof this.audio.playSwallow === 'function') {
+                this.audio.playSwallow();
+            }
             // Проглоченная монета: обычные очки как за еду, но streak монет обнуляем.
             this.score = (this.score || 0) + 5;
             this.resetCoinRushStreak();
@@ -217,6 +223,9 @@ class Game {
 
         eventBus.on('COIN_BITTEN', (data) => {
             if (this.state !== 'RUNNING') return;
+            if (this.audio && typeof this.audio.playCoinBite === 'function') {
+                this.audio.playCoinBite();
+            }
             let amount = 100;
             if (this.perks?.hasDoubleBite?.()) amount += 100;
             this.perks.addCoins(amount);
@@ -272,6 +281,9 @@ class Game {
                 if (e.repeat) return;
                 e.preventDefault();
                 // Удержание: открылся рот (дальше закроется по keyup или автозакрытию через 2s)
+                if (this.audio && typeof this.audio.playJawOpen === 'function') {
+                    this.audio.playJawOpen();
+                }
                 this.renderer?.startBiteHold?.();
                 return;
             }
@@ -281,6 +293,9 @@ class Game {
             const key = e.key;
             if (key === ' ' || key === 'Spacebar') {
                 e.preventDefault();
+                if (this.audio && typeof this.audio.playJawClose === 'function') {
+                    this.audio.playJawClose();
+                }
                 this.renderer?.endBiteHold?.();
             }
         });
@@ -288,7 +303,12 @@ class Game {
         // Кнопки UI
         const pauseBtn = document.getElementById('pause-btn');
         if (pauseBtn) {
-            pauseBtn.addEventListener('click', () => this.pause());
+            pauseBtn.addEventListener('click', () => {
+                if (this.audio && typeof this.audio.playPress === 'function') {
+                    this.audio.playPress();
+                }
+                this.pause();
+            });
         }
 
         const soundBtn = document.getElementById('sound-btn');
@@ -298,7 +318,12 @@ class Game {
 
         const resumeBtn = document.getElementById('resume-btn');
         if (resumeBtn) {
-            resumeBtn.addEventListener('click', () => this.resume());
+            resumeBtn.addEventListener('click', () => {
+                if (this.audio && typeof this.audio.playPress === 'function') {
+                    this.audio.playPress();
+                }
+                this.resume();
+            });
         }
 
         const pauseRestartBtn = document.getElementById('pause-restart-btn');
@@ -316,6 +341,9 @@ class Game {
         const pauseLanguageBtn = document.getElementById('pause-language-btn');
         if (pauseLanguageBtn) {
             pauseLanguageBtn.addEventListener('click', () => {
+                if (this.audio && typeof this.audio.playPress === 'function') {
+                    this.audio.playPress();
+                }
                 this.openLanguageOverlay();
             });
         }
@@ -323,6 +351,9 @@ class Game {
         const languageBackBtn = document.getElementById('language-back-btn');
         if (languageBackBtn) {
             languageBackBtn.addEventListener('click', () => {
+                if (this.audio && typeof this.audio.playPress === 'function') {
+                    this.audio.playPress();
+                }
                 this.closeLanguageOverlay();
             });
         }
@@ -331,6 +362,9 @@ class Game {
             const btn = document.getElementById(id);
             if (btn) {
                 btn.addEventListener('click', () => {
+                    if (this.audio && typeof this.audio.playPress === 'function') {
+                        this.audio.playPress();
+                    }
                     const lang = btn.dataset.lang || 'en';
                     if (window.I18N && typeof window.I18N.setLanguage === 'function') {
                         window.I18N.setLanguage(lang);
@@ -352,7 +386,12 @@ class Game {
         // Кнопка PLAY на стартовом экране
         const playBtn = document.getElementById('play-btn');
         if (playBtn) {
-            playBtn.addEventListener('click', () => this.start());
+            playBtn.addEventListener('click', () => {
+                if (this.audio && typeof this.audio.playPress === 'function') {
+                    this.audio.playPress();
+                }
+                this.start();
+            });
         }
 
         // Buy Slow / Buy Shield на стартовом экране — кликабельна вся карточка .start-spell-btn
@@ -362,14 +401,20 @@ class Game {
                 const btn = card.querySelector('.start-buy-btn');
                 if (!btn || btn.disabled) return;
                 const spell = btn.dataset?.spell;
+                let bought = false;
                 if (spell === 'slow' && this.perks?.buySlow?.()) {
+                    bought = true;
                     this.persistProgressionSoon();
                     this.updateUI();
                     this.renderer?.ui?.updateStartGameScreen?.(this.getGameState());
                 } else if (spell === 'shield' && this.perks?.buyShield?.()) {
+                    bought = true;
                     this.persistProgressionSoon();
                     this.updateUI();
                     this.renderer?.ui?.updateStartGameScreen?.(this.getGameState());
+                }
+                if (bought && this.audio && typeof this.audio.playBuy === 'function') {
+                    this.audio.playBuy();
                 }
             });
         });
@@ -412,6 +457,9 @@ class Game {
                 if (holdPointerId != null && typeof biteBtn.setPointerCapture === 'function') {
                     try { biteBtn.setPointerCapture(holdPointerId); } catch (_err) { /* ignore */ }
                 }
+                if (this.audio && typeof this.audio.playJawOpen === 'function') {
+                    this.audio.playJawOpen();
+                }
                 this.renderer?.startBiteHold?.();
             };
 
@@ -427,6 +475,9 @@ class Game {
                     try { biteBtn.releasePointerCapture(holdPointerId); } catch (_err) { /* ignore */ }
                 }
                 holdPointerId = null;
+                if (this.audio && typeof this.audio.playJawClose === 'function') {
+                    this.audio.playJawClose();
+                }
                 this.renderer?.endBiteHold?.();
             };
 
@@ -756,6 +807,13 @@ class Game {
         this.state = 'DYING';
         // Анимация перелома зубов только при реальной смерти (щит не активен).
         const timingJawHit = meta?.reason === 'TIMING_JAW_HIT_TOP' || meta?.reason === 'TIMING_JAW_HIT_BOT';
+        if (this.audio) {
+            if (timingJawHit && typeof this.audio.playJawBroke === 'function') {
+                this.audio.playJawBroke();
+            } else if (!timingJawHit && typeof this.audio.playFrontCrush === 'function') {
+                this.audio.playFrontCrush();
+            }
+        }
         if (timingJawHit) {
             this.renderer?.penguinRig?.triggerTimingTeethHitFx?.();
         }
@@ -855,6 +913,9 @@ class Game {
         if (this.timer && typeof this.timer.activateSlowDown === 'function') {
             const durationSec = 10;
             this.timer.activateSlowDown(durationSec);
+            if (this.audio && typeof this.audio.playSlowSpell === 'function') {
+                this.audio.playSlowSpell();
+            }
 
             const safetyMultiplier = this.perks?.getSlowSafetyMultiplier?.() || 0;
             if (safetyMultiplier > 0) {
@@ -890,6 +951,9 @@ class Game {
         } else {
             this.shieldExpiresAt = 0;
         }
+        if (this.audio && typeof this.audio.playShieldSpell === 'function') {
+            this.audio.playShieldSpell();
+        }
         return true;
     }
 
@@ -909,7 +973,11 @@ class Game {
     absorbHitWithShield() {
         if (!this.shieldActive) return false;
         this.shieldHitsRemaining = Math.max(0, (this.shieldHitsRemaining || 0) - 1);
-        if (this.shieldHitsRemaining <= 0) {
+        const depleted = this.shieldHitsRemaining <= 0;
+        if (depleted && this.audio && typeof this.audio.playShieldAbsorb === 'function') {
+            this.audio.playShieldAbsorb();
+        }
+        if (depleted) {
             this.deactivateShield({ startCooldown: true });
         }
         // В collisionEngine на первом "смертельном" контакте ставится deathTriggered=true.
@@ -936,6 +1004,9 @@ class Game {
         this.coinRushEndsAt = Date.now() + this.coinRushDurationMs;
         this.coinRushProgress = 0;
         this.coinRushTarget = Math.max(10, (this.coinRushTarget || 10) + this.coinRushStep);
+        if (this.audio && typeof this.audio.playCoinRush === 'function') {
+            this.audio.playCoinRush();
+        }
         this.renderer?.refreshVisibleItemTypes?.();
         this.updateUI();
         this.saveSnapshot();
@@ -947,6 +1018,9 @@ class Game {
         if (Date.now() < (this.coinRushEndsAt || 0)) return;
         this.coinRushActive = false;
         this.coinRushEndsAt = 0;
+        if (this.audio && typeof this.audio.stopCoinRush === 'function') {
+            this.audio.stopCoinRush();
+        }
         // Не вызываем refreshVisibleItemTypes: уже заспавненные монеты остаются монетами,
         // новые объекты будут создаваться как еда/монета по value в ensureFoodCircle.
         this.updateUI();
@@ -981,7 +1055,13 @@ class Game {
         
         this.state = 'GAME_OVER';
         this.deathInProgress = false;
+        if (this.audio && typeof this.audio.stopCoinRush === 'function') {
+            this.audio.stopCoinRush();
+        }
         this.audio.pause();
+        if (this.audio && typeof this.audio.playGameOverJingle === 'function') {
+            this.audio.playGameOverJingle();
+        }
 
         // В новой механике нет danger-zones/окон угроз.
         this.lastDeathDangerWindow = null;

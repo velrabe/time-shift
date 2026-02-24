@@ -11,6 +11,9 @@ class AudioSystem {
         // Эффекты перемотки
         this.forwardEffect = null;
         this.backEffect = null;
+
+        // Короткие звуковые эффекты (SFX)
+        this.effects = {};
     }
 
     // Инициализация
@@ -44,20 +47,25 @@ class AudioSystem {
             console.error('Audio load error:', e, 'src:', this.audioElement.src);
         });
         
+        // Загружаем короткие игровые эффекты
+        this.effects = {
+            swallow: this._createEffectElement('audio/swallow.mp3', 0.9),
+            jawOpen: this._createEffectElement('audio/open-jaw.mp3', 0.9),
+            jawClose: this._createEffectElement('audio/close-jaw.mp3', 0.9),
+            frontCrush: this._createEffectElement('audio/front-crush.mp3', 1.0),
+            jawBroke: this._createEffectElement('audio/jaw-broke.mp3', 1.0),
+            gameOver: this._createEffectElement('audio/game-over.mp3', 1.0),
+            coinRush: this._createEffectElement('audio/2.mp3', 0.9),
+            coinBite: this._createEffectElement('audio/bite-coin.mp3', 0.9),
+            buy: this._createEffectElement('audio/buy.mp3', 0.9),
+            slow: this._createEffectElement('audio/slow.mp3', 0.9),
+            shield: this._createEffectElement('audio/sheild.mp3', 0.9),
+            shieldAbsorb: this._createEffectElement('audio/shield-absorb.mp3', 0.9),
+            press: this._createEffectElement('audio/press.mp3', 0.9)
+        };
         
-        // Добавляем треки (можно расширить)
-        this.tracks = [
-            {
-                id: 'main',
-                url: 'audio/1.mp3',
-                bpm: 120
-            }
-        ];
-
-        // Устанавливаем первый трек
-        if (this.tracks.length > 0) {
-            this.setTrack(this.tracks[0]);
-        }
+        // Фоновая музыка временно отключена: не добавляем основной трек.
+        this.tracks = [];
     }
 
     // Установка трека
@@ -77,6 +85,11 @@ class AudioSystem {
     play() {
         if (!this.audioElement) {
             console.warn('Audio element not initialized');
+            return;
+        }
+
+        // Если фоновый трек не выбран — оставляем тишину.
+        if (!this.currentTrack) {
             return;
         }
         
@@ -112,11 +125,7 @@ class AudioSystem {
     // Пауза
     pause() {
         if (!this.audioElement) return;
-        
-        // Останавливаем все эффекты
-        if (this.forwardEffect) this.forwardEffect.pause();
-        if (this.backEffect) this.backEffect.pause();
-        
+
         this.audioElement.pause();
         this.isPlaying = false;
     }
@@ -173,6 +182,125 @@ class AudioSystem {
         if (this.backEffect) {
             this.backEffect.volume = this.volume * 0.3; // 30% от текущей громкости
         }
+        if (this.effects) {
+            Object.values(this.effects).forEach((el) => {
+                if (!el) return;
+                const mult = typeof el._volumeMultiplier === 'number' ? el._volumeMultiplier : 1;
+                el.volume = this.volume * mult;
+            });
+        }
+    }
+
+    // Вспомогательный метод создания элемента эффекта
+    _createEffectElement(relativeUrl, volumeMultiplier = 1.0) {
+        const el = document.createElement('audio');
+        el.preload = 'auto';
+        el.crossOrigin = 'anonymous';
+        el._volumeMultiplier = volumeMultiplier;
+        el.volume = this.volume * volumeMultiplier;
+        const url = new URL(relativeUrl, window.location.href);
+        el.src = url.href;
+        return el;
+    }
+
+    // Вспомогательный метод воспроизведения эффекта
+    _playEffect(key) {
+        const el = this.effects && this.effects[key];
+        if (!el) return;
+        try {
+            el.currentTime = 0;
+            const playPromise = el.play();
+            if (playPromise && typeof playPromise.catch === 'function') {
+                playPromise.catch((e) => {
+                    if (e.name !== 'NotAllowedError') {
+                        console.error(`Failed to play effect "${key}":`, e);
+                    }
+                });
+            }
+        } catch (e) {
+            console.error(`Failed to play effect "${key}":`, e);
+        }
+    }
+
+    // Публичные методы для игровых эффектов
+    playSwallow() {
+        this._playEffect('swallow');
+    }
+
+    playJawOpen() {
+        this._playEffect('jawOpen');
+    }
+
+    playJawClose() {
+        this._playEffect('jawClose');
+    }
+
+    playFrontCrush() {
+        this._playEffect('frontCrush');
+    }
+
+    playJawBroke() {
+        this._playEffect('jawBroke');
+    }
+
+    playGameOverJingle() {
+        this._playEffect('gameOver');
+    }
+
+    playCoinRush() {
+        const el = this.effects && this.effects.coinRush;
+        if (!el) return;
+        // Делаем CoinRush зацикленным фоновым эффектом на время режима.
+        el.loop = true;
+        if (!el.paused) return;
+        try {
+            el.currentTime = 0;
+            const playPromise = el.play();
+            if (playPromise && typeof playPromise.catch === 'function') {
+                playPromise.catch((e) => {
+                    if (e.name !== 'NotAllowedError') {
+                        console.error('Failed to play effect "coinRush":', e);
+                    }
+                });
+            }
+        } catch (e) {
+            console.error('Failed to play effect "coinRush":', e);
+        }
+    }
+
+    stopCoinRush() {
+        const el = this.effects && this.effects.coinRush;
+        if (!el) return;
+        try {
+            el.pause();
+            el.currentTime = 0;
+        } catch (e) {
+            console.error('Failed to stop effect "coinRush":', e);
+        }
+    }
+
+    playCoinBite() {
+        this._playEffect('coinBite');
+    }
+
+    playBuy() {
+        this._playEffect('buy');
+    }
+
+    playSlowSpell() {
+        this._playEffect('slow');
+    }
+
+    playShieldSpell() {
+        this._playEffect('shield');
+    }
+
+    playShieldAbsorb() {
+        this._playEffect('shieldAbsorb');
+    }
+
+    playPress() {
+        this._playEffect('press');
     }
 
     // Получение громкости
@@ -191,6 +319,17 @@ class AudioSystem {
         }
         if (this.backEffect) {
             this.backEffect.currentTime = 0;
+        }
+        if (this.effects) {
+            Object.values(this.effects).forEach((el) => {
+                if (!el) return;
+                try {
+                    el.pause();
+                } catch (e) {
+                    // ignore
+                }
+                el.currentTime = 0;
+            });
         }
         this.updatePlaybackRate(1.0);
     }

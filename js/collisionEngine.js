@@ -74,7 +74,6 @@ class CollisionEngine {
             state.lastTickMs = this.getNowMs();
         }
         circle.dataset.swallowBoost = 'false';
-        circle.style.removeProperty('transform');
     }
 
     applySwallowBoostTick(circle, state, nowMs) {
@@ -254,7 +253,8 @@ class CollisionEngine {
             // локальное смещение влево с той же скоростью ленты (итого ≈ x2).
             if (!isCoin && mouthOpen && rightColliderHit && !boostState.active && !boostState.entered) {
                 const sampled = Number.isFinite(observedSpeedPxMs) ? observedSpeedPxMs : 0;
-                const clamped = Math.max(0.03, Math.min(0.45, sampled || 0.07));
+                const base = sampled || 0.07;
+                const clamped = Math.max(0.03, Math.min(0.9, base * 2));
                 boostState.active = true;
                 boostState.entered = true;
                 boostState.targetSpeedPxMs = clamped;
@@ -262,7 +262,7 @@ class CollisionEngine {
                 boostState.lastTickMs = nowMs;
                 circle.dataset.swallowBoost = 'true';
             }
-            if (!isCoin) this.applySwallowBoostTick(circle, boostState, nowMs);
+            if (!isCoin && mouthOpen) this.applySwallowBoostTick(circle, boostState, nowMs);
 
             // Монета:
             // - Коины начисляются только при реальном укусе: обе челюсти захватили монетку и рот ещё не полностью закрыт (момент сжатия).

@@ -16,7 +16,8 @@
 
     /* Penguin rig sizing */
     --penguin-w: min(360px, 62vw);
-    --penguin-aspect-ratio: calc(378 / 196);
+    /* Все текущие head/jaw/tooth ассеты имеют единый фрейм 546x200. */
+    --penguin-aspect-ratio: calc(546 / 200);
     --penguin-h: calc(var(--penguin-w) / var(--penguin-aspect-ratio));
 }
 
@@ -756,7 +757,8 @@ body {
     position: absolute;
     height: 100%;
     display: flex;
-    align-items: center;
+    /* По вертикали лента привязана к кадру головы пингвина, поэтому элементы выравниваем по верхнему краю. */
+    align-items: flex-start;
     will-change: transform;
     /* Анимация управляется через JS для синхронизации с кругом */
 }
@@ -773,8 +775,8 @@ body {
     transition: opacity 0.2s;
     flex-shrink: 0;
     display: flex;
-    align-items: center;
-    justify-content: center;
+    align-items: flex-start;
+    justify-content: flex-start;
     overflow: visible;
     background: transparent !important;
     border: none !important;

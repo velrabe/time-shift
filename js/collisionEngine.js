@@ -257,17 +257,22 @@ class CollisionEngine {
             const topCollision1 = topTooth1 && this.polygonsOverlapSAT(foodPoly, topTooth1);
             const botCollision1 = botTooth1 && this.polygonsOverlapSAT(foodPoly, botTooth1);
             const teethCollision1 = topCollision1 || botCollision1;
-            // Лёд: зуб 5 (индекс 4) = геймовер; зубы 1–4 (индексы 0–3) = расщелкивание
+            // Лёд: зубы 4–5 (индексы 3–4) = геймовер; зубы 1–3 (индексы 0–2) = расщелкивание
+            const topTooth4 = topToothPolys[3];
             const topTooth5 = topToothPolys[4];
+            const botTooth4 = botToothPolys[3];
             const botTooth5 = botToothPolys[4];
-            const iceHitTooth5 = (topTooth5 && this.polygonsOverlapSAT(foodPoly, topTooth5)) || (botTooth5 && this.polygonsOverlapSAT(foodPoly, botTooth5));
+            const iceHitTooth4 = (topTooth4 && this.polygonsOverlapSAT(foodPoly, topTooth4))
+                || (botTooth4 && this.polygonsOverlapSAT(foodPoly, botTooth4));
+            const iceHitTooth5 = (topTooth5 && this.polygonsOverlapSAT(foodPoly, topTooth5))
+                || (botTooth5 && this.polygonsOverlapSAT(foodPoly, botTooth5));
             let iceCrack = false;
             if (isIce && !mouthOpen && !mouthFullyClosed) {
-                for (let i = 0; i <= 3 && i < topToothPolys.length; i++) {
+                for (let i = 0; i <= 2 && i < topToothPolys.length; i++) {
                     if (topToothPolys[i] && this.polygonsOverlapSAT(foodPoly, topToothPolys[i])) { iceCrack = true; break; }
                 }
                 if (!iceCrack) {
-                    for (let i = 0; i <= 3 && i < botToothPolys.length; i++) {
+                    for (let i = 0; i <= 2 && i < botToothPolys.length; i++) {
                         if (botToothPolys[i] && this.polygonsOverlapSAT(foodPoly, botToothPolys[i])) { iceCrack = true; break; }
                     }
                 }
@@ -278,8 +283,11 @@ class CollisionEngine {
             const timingJawHit = (!mouthOpen) && (!mouthFullyClosed) && teethCollision1;
             const foodDeathCollision = timingJawHit || closedMouthLeftHit;
 
-            // Лёд: геймовер только при контакте с 5-м зубом
-            const iceDeathCollision = isIce && !mouthOpen && !mouthFullyClosed && iceHitTooth5;
+            // Лёд: геймовер при контакте с зубами 4–5, пока рот не полностью закрыт,
+            // либо при касании правого коллайдера в полностью закрытом состоянии.
+            const iceDeathFromTeeth45 = isIce && !mouthFullyClosed && (iceHitTooth4 || iceHitTooth5);
+            const iceDeathFromRightCollider = isIce && mouthFullyClosed && closedMouthLeftHit;
+            const iceDeathCollision = iceDeathFromTeeth45 || iceDeathFromRightCollider;
 
             // Ускорение при входе в right-collider отключено: объект движется только со скоростью ленты.
 
@@ -315,8 +323,8 @@ class CollisionEngine {
                         containerRect,
                         jawTopRect,
                         jawBotRect,
-                        teethTopPoly: topToothPolys[0] ?? null,
-                        teethBotPoly: botToothPolys[0] ?? null,
+                        teethTopPolys: topToothPolys,
+                        teethBotPolys: botToothPolys,
                         rightColliderPoly,
                         dangerRect,
                         dangerPoly,
@@ -435,8 +443,8 @@ class CollisionEngine {
                 containerRect,
                 jawTopRect,
                 jawBotRect,
-                teethTopPoly: topToothPolys[0] ?? null,
-                teethBotPoly: botToothPolys[0] ?? null,
+                teethTopPolys: topToothPolys,
+                teethBotPolys: botToothPolys,
                 rightColliderPoly,
                 dangerRect: trackedDangerRect,
                 dangerPoly: trackedDangerPoly,

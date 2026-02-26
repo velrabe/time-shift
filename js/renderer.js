@@ -23,8 +23,8 @@ class Renderer {
         
         this._mouthHoldMaxMs = 2000;
         
-        // Набор "баз" для разнообразия еды на ленте (картинки в img/food/*.svg).
-        this.foodBases = ['f1', 'f2', 'f3', 'f4', 'f5', 'f6'];
+        // Набор "баз" для еды на ленте (используем только реальные ассеты из img/food).
+        this.foodBases = ['f1', 'f2', 'f3'];
         // Кэш данных коллайдера из масок SVG (viewBox + path d).
         this._foodColliderCache = {};
         // In-flight fetch cache: убирает дубликаты тяжелых запросов к одним и тем же SVG.
@@ -264,32 +264,17 @@ class Renderer {
     getFoodSrc(base) {
         if (!base) return '';
         if (base === 'ice') return 'img/food/ice.svg';
+        if (base === 'coin') return 'img/food/coin.svg';
         return `img/food/${base}-s.svg`;
     }
 
     getFoodSrcCandidates(base) {
         if (!base) return [];
         if (base === 'ice') return ['img/food/ice.svg'];
+        if (base === 'coin') return ['img/food/coin.svg'];
         return [
-            `img/food/${base}-s.svg`,
-            `img/food/${base}-s.png`,
-            `img/${base}-s.png`,
-            `img/${base}.png`
+            `img/food/${base}-s.svg`
         ];
-    }
-
-    getFallbackFoodSvg(base) {
-        const palette = {
-            f1: ['#ffb347', '#ff8c42'],
-            f2: ['#7dd56f', '#34a853'],
-            f3: ['#8ec5ff', '#4d8dff'],
-            f4: ['#ffd36e', '#ffb020'],
-            f5: ['#caa6ff', '#8e66ff'],
-            f6: ['#ff9a8b', '#ff6b6b']
-        };
-        const [c1, c2] = palette[base] || palette.f1;
-        const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="160" height="160" viewBox="0 0 160 160"><defs><radialGradient id="g" cx="35%" cy="30%" r="70%"><stop offset="0%" stop-color="${c1}"/><stop offset="100%" stop-color="${c2}"/></radialGradient></defs><circle cx="80" cy="80" r="62" fill="url(#g)"/><circle cx="58" cy="58" r="12" fill="rgba(255,255,255,0.35)"/></svg>`;
-        return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
     }
 
     /** Загружает из img/food/{base}-s.svg маску и возвращает { viewBox, pathD }. Результат кэшируется. */
@@ -304,11 +289,19 @@ class Renderer {
                 if (!res.ok) throw new Error(`Failed to fetch collider source: ${res.status}`);
                 const text = await res.text();
                 const viewBoxMatch = text.match(/viewBox="([^"]+)"/);
-                // Старый формат: path внутри <mask>; новый формат: контур прямо в корне <svg><path d="..."/>
-                const pathInMask = text.match(/<mask[^>]*>[\s\S]*?<path\s+d="([^"]+)"/);
-                const pathInRoot = text.match(/<path\s[^>]*\bd="([^"]+)"/);
+                // Новый протокол: используем только новый формат ассетов.
+                // 1) Если есть <path data-collider="true"> или id="collider" — берём его.
+                // 2) Иначе берём *последний* <path> в SVG как нижний слой-коллайдер.
+                const colliderAttr =
+                    text.match(/<path[^>]*\bdata-collider="true"[^>]*\bd="([^"]+)"/i)
+                    || text.match(/<path[^>]*\bid="collider"[^>]*\bd="([^"]+)"/i);
+                let lastRootPath = null;
+                const allRootPaths = [...text.matchAll(/<path\s[^>]*\bd="([^"]+)"[^>]*>/g)];
+                if (allRootPaths.length > 0) {
+                    lastRootPath = allRootPaths[allRootPaths.length - 1][1];
+                }
                 const viewBox = viewBoxMatch ? viewBoxMatch[1] : '0 0 200 200';
-                const pathD = (pathInMask ? pathInMask[1] : null) || (pathInRoot ? pathInRoot[1] : null);
+                const pathD = (colliderAttr ? colliderAttr[1] : null) || lastRootPath;
                 const data = { viewBox, pathD };
                 this._foodColliderCache[base] = data;
                 return data;
@@ -335,9 +328,12 @@ class Renderer {
             svg.setAttribute('viewBox', data.viewBox);
             svg.setAttribute('aria-hidden', 'true');
             svg.style.position = 'absolute';
-            svg.style.left = '50%';
-            svg.style.top = '50%';
-            svg.style.transform = 'translate(-50%, -50%)';
+            // Коллайдер строго совпадает с контейнером еды.
+            svg.style.left = '0';
+            svg.style.top = '0';
+            svg.style.width = '100%';
+            svg.style.height = '100%';
+            svg.style.transform = 'none';
             svg.style.pointerEvents = 'none';
             svg.style.overflow = 'visible';
             const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
@@ -345,11 +341,6 @@ class Renderer {
             path.setAttribute('fill', 'none');
             svg.appendChild(path);
             circleEl.appendChild(svg);
-            const img = circleEl.querySelector('img.food-img');
-            if (img && img.style.width && img.style.height) {
-                svg.style.width = img.style.width;
-                svg.style.height = img.style.height;
-            }
         });
     }
 
@@ -362,7 +353,7 @@ class Renderer {
     }
 
     getItemSrc(itemType, base) {
-        if (itemType === 'coin') return 'img/ui/coin.svg';
+        if (itemType === 'coin') return 'img/food/coin.svg';
         if (itemType === 'ice') return 'img/food/ice.svg';
         return this.getFoodSrc(base);
     }
@@ -382,6 +373,20 @@ class Renderer {
         // Стабильные размеры: одинаковые объекты всегда рендерятся в одном масштабе.
         const byClass = { S: 1, M: 1, L: 1 };
         return byClass[cls] || 1;
+    }
+
+    /** Текущая высота головы пингвина в пикселях (rig-слой головы внутри focus-zone). */
+    getPenguinHeadHeight() {
+        try {
+            const parts = this.getPenguinParts?.();
+            const headLayer = parts?.head || null;
+            const rect = headLayer?.getBoundingClientRect?.();
+            const h = rect?.height;
+            if (!Number.isFinite(h) || h <= 0) return null;
+            return h;
+        } catch (e) {
+            return null;
+        }
     }
 
     ensureFoodCircle(circleEl) {
@@ -415,7 +420,14 @@ class Renderer {
                     this.setImageSrcIfChanged(img, candidates[nextIdx]);
                     return;
                 }
-                this.setImageSrcIfChanged(img, this.getFallbackFoodSvg(base));
+                // Фолбэк только на существующие food-ассеты в папке, без генерации SVG-шариков.
+                const nextBase = (this.foodBases || []).find((b) => b && b !== base) || 'f1';
+                const nextCandidates = this.getFoodSrcCandidates(nextBase);
+                if (nextCandidates.length > 0) {
+                    circleEl.dataset.foodBase = nextBase;
+                    circleEl.dataset.foodSrcIdx = '0';
+                    this.setImageSrcIfChanged(img, nextCandidates[0]);
+                }
             });
             circleEl.appendChild(img);
         }
@@ -434,7 +446,7 @@ class Renderer {
         if (itemType === 'food') {
             circleEl.dataset.foodSrcIdx = '0';
             const candidates = this.getFoodSrcCandidates(base);
-            this.setImageSrcIfChanged(img, candidates[0] || this.getFallbackFoodSvg(base));
+            this.setImageSrcIfChanged(img, candidates[0] || '');
             this.ensureFoodCollider(circleEl, base);
             this.setFoodPlaceholderSize(circleEl, img);
         } else if (itemType === 'ice') {
@@ -443,11 +455,14 @@ class Renderer {
             this.ensureFoodCollider(circleEl, 'ice');
             this.setFoodPlaceholderSize(circleEl, img);
         } else {
-            // При Coin Rush круги становятся монетами не только визуально:
-            // удаляем маску-коллайдер еды, чтобы физика не считала старый food-path.
+            // При Coin Rush круги могут менять тип: сбрасываем старый коллайдер еды
+            // и добавляем коллайдер монеты при необходимости.
             const oldCollider = circleEl.querySelector('.food-collider');
             if (oldCollider) oldCollider.remove();
             this.setImageSrcIfChanged(img, this.getItemSrc(itemType, base));
+            if (itemType === 'coin') {
+                this.ensureFoodCollider(circleEl, 'coin');
+            }
             this.setFoodPlaceholderSize(circleEl, img);
         }
         
@@ -459,15 +474,27 @@ class Renderer {
     /** Задаёт размер img до загрузки, чтобы не было "прыжка" с исходных размеров SVG. */
     setFoodPlaceholderSize(circleEl, img) {
         if (!circleEl || !img) return;
-        const baseUnit = parseFloat(getComputedStyle(circleEl).getPropertyValue('--circle-size')) || 63;
-        const isCoin = circleEl?.dataset?.itemType === 'coin';
-        const baselineSmallHeight = isCoin ? 64 : 161.5;
+        const headHeight = this.getPenguinHeadHeight() || 0;
         const sizeScale = this.getSizeScaleForCircle(circleEl);
-        const globalScale = (baseUnit / baselineSmallHeight) * (isCoin ? 0.72 : 0.5) * sizeScale;
-        const placeholderW = 200 * globalScale;
-        const placeholderH = (isCoin ? 64 : 161.5) * globalScale;
-        // Слот по ширине объекта (без искусственного центр-смещения внутри фиксированного контейнера).
+
+        let placeholderH;
+        let placeholderW;
+
+        if (headHeight > 0) {
+            // Основной путь: высота слота пропорциональна высоте головы пингвина.
+            placeholderH = headHeight * sizeScale;
+            // До загрузки точное соотношение сторон неизвестно, берём квадратный слот.
+            placeholderW = placeholderH;
+        } else {
+            // Fallback: старый режим через circle-size, если почему-то недоступна голова.
+            const baseUnit = parseFloat(getComputedStyle(circleEl).getPropertyValue('--circle-size')) || 63;
+            placeholderH = baseUnit * 1.6 * sizeScale;
+            placeholderW = placeholderH;
+        }
+
+        // Слот по ширине/высоте объекта (контейнер совпадает по кадру с пингвином).
         circleEl.style.width = `${placeholderW}px`;
+        circleEl.style.height = `${placeholderH}px`;
         img.style.width = `${placeholderW}px`;
         img.style.height = `${placeholderH}px`;
     }
@@ -480,15 +507,20 @@ class Renderer {
         const naturalHeight = img.naturalHeight;
         if (naturalWidth === 0 || naturalHeight === 0) return;
 
-        // Один глобальный коэффициент масштаба для ВСЕХ еды, чтобы относительные размеры совпадали с оригиналом.
-        // Подобрано по median высоты f*-s (169,154,149,257,217,137) => 161.5.
-        const baseUnit = parseFloat(getComputedStyle(circleEl).getPropertyValue('--circle-size')) || 63;
-        const isCoin = circleEl?.dataset?.itemType === 'coin';
-        const baselineSmallHeight = isCoin ? 64 : 161.5;
         const sizeScale = this.getSizeScaleForCircle(circleEl);
-        // Глобальный масштаб подгоняет всё под circle-size; дополнительный
-        // коэффициент 0.5 уменьшает ВСЕ объекты на ленте в 2 раза.
-        const globalScale = (baseUnit / baselineSmallHeight) * (isCoin ? 0.72 : 0.5) * sizeScale;
+        const headHeight = this.getPenguinHeadHeight();
+
+        let globalScale;
+        if (headHeight && headHeight > 0) {
+            // Нормируем весь спрайт по высоте головы пингвина:
+            // итоговая высота объекта = высота головы * sizeScale.
+            globalScale = (headHeight / naturalHeight) * sizeScale;
+        } else {
+            // Fallback: если по какой-то причине высота головы недоступна, используем прежнюю логику.
+            const baseUnit = parseFloat(getComputedStyle(circleEl).getPropertyValue('--circle-size')) || 63;
+            const baselineSmallHeight = naturalHeight || 1;
+            globalScale = (baseUnit / baselineSmallHeight) * sizeScale;
+        }
 
         const targetWidth = naturalWidth * globalScale;
         const targetHeight = naturalHeight * globalScale;
@@ -497,13 +529,9 @@ class Renderer {
         // иначе ломается "питч" ленты (движение/рецикл завязаны на постоянный шаг).
         img.style.width = `${targetWidth}px`;
         img.style.height = `${targetHeight}px`;
+        // Контейнер ленты по кадру совпадает с объектом.
         circleEl.style.width = `${targetWidth}px`;
-
-        const colliderSvg = circleEl.querySelector('.food-collider');
-        if (colliderSvg) {
-            colliderSvg.style.width = `${targetWidth}px`;
-            colliderSvg.style.height = `${targetHeight}px`;
-        }
+        circleEl.style.height = `${targetHeight}px`;
 
         // Реальные размеры для физики/дебага
         circleEl.dataset.actualWidth = String(targetWidth);
@@ -569,12 +597,19 @@ class Renderer {
             overlay.appendChild(objectsContainer);
         }
 
+        const teethTopPolyEls = [];
+        const teethBotPolyEls = [];
+        for (let i = 0; i < 5; i += 1) {
+            teethTopPolyEls.push(ensurePoly(`debug-teeth-top-poly-${i + 1}`, { fill: 'rgba(255,0,0,0.10)', stroke: 'rgba(255,0,0,0.95)' }));
+            teethBotPolyEls.push(ensurePoly(`debug-teeth-bot-poly-${i + 1}`, { fill: 'rgba(255,165,0,0.10)', stroke: 'rgba(255,165,0,0.95)' }));
+        }
+
         this.debugEls = {
             overlay,
             objectsContainer,
             svg,
-            teethTopPolyEl: ensurePoly('debug-teeth-top-poly', { fill: 'rgba(255,0,0,0.10)', stroke: 'rgba(255,0,0,0.95)' }),
-            teethBotPolyEl: ensurePoly('debug-teeth-bot-poly', { fill: 'rgba(255,165,0,0.10)', stroke: 'rgba(255,165,0,0.95)' }),
+            teethTopPolyEls,
+            teethBotPolyEls,
             rightColliderPolyEl: ensurePoly('debug-right-collider-poly', { fill: 'rgba(0,120,255,0.10)', stroke: 'rgba(0,120,255,0.95)' }),
             dangerPolyEl: ensurePoly('debug-danger-poly', { fill: 'rgba(0,150,255,0.08)', stroke: 'rgba(0,150,255,0.9)' }),
             jawTopBox: ensure('debug-jaw-top-box', 'debug-box debug-jaw-top'),
@@ -636,9 +671,9 @@ class Renderer {
         }
     }
 
-    updateDebugOverlay({ containerRect, jawTopRect, jawBotRect, teethTopPoly, teethBotPoly, rightColliderPoly, dangerRect, dangerPoly, biteX }) {
+    updateDebugOverlay({ containerRect, jawTopRect, jawBotRect, teethTopPoly, teethBotPoly, teethTopPolys, teethBotPolys, rightColliderPoly, dangerRect, dangerPoly, biteX }) {
         if (!this.debug || !this.debugEls) return;
-        const { jawTopBox, dangerBox, dangerPolyEl, biteLine, jawBottomLine, svg, teethTopPolyEl, teethBotPolyEl, rightColliderPolyEl } = this.debugEls;
+        const { jawTopBox, dangerBox, dangerPolyEl, biteLine, jawBottomLine, svg, teethTopPolyEls, teethBotPolyEls, rightColliderPolyEl } = this.debugEls;
 
         const placeBox = (box, rect) => {
             if (!rect) {
@@ -736,8 +771,25 @@ class Renderer {
             svg.setAttribute('height', String(containerRect.height));
             svg.setAttribute('viewBox', `0 0 ${containerRect.width} ${containerRect.height}`);
         }
-        setPoly(teethTopPolyEl, teethTopPoly);
-        setPoly(teethBotPolyEl, teethBotPoly);
+        const topPolys = Array.isArray(teethTopPolys)
+            ? teethTopPolys
+            : (teethTopPoly ? [teethTopPoly] : []);
+        const botPolys = Array.isArray(teethBotPolys)
+            ? teethBotPolys
+            : (teethBotPoly ? [teethBotPoly] : []);
+
+        if (Array.isArray(teethTopPolyEls)) {
+            teethTopPolyEls.forEach((el, idx) => {
+                const pts = topPolys[idx] || null;
+                setPoly(el, pts);
+            });
+        }
+        if (Array.isArray(teethBotPolyEls)) {
+            teethBotPolyEls.forEach((el, idx) => {
+                const pts = botPolys[idx] || null;
+                setPoly(el, pts);
+            });
+        }
         setPoly(rightColliderPolyEl, rightColliderPoly);
     }
 
@@ -782,8 +834,37 @@ class Renderer {
         // Кэшируем позицию рта в "спокойном" состоянии.
         // Даже если пингвин визуально двигается при укусе, лента должна ориентироваться на этот якорь.
         this._cachedMouthRightX = container ? this.penguinRig.getPenguinMouthRightX(container) : 0;
+
+        // Вертикально выравниваем "ленту" по тому же кадру, что и голова пингвина:
+        // top/height number-strip-container = top/height слоя головы.
+        this.updateStripVerticalFrame();
+
         // При ресайзе могут поменяться размеры кружков/маргины (responsive) — пересчитываем метрики
         this.stripConveyor.recomputeStripMetrics();
+    }
+
+    /** Делает так, чтобы лента еды жила в том же вертикальном кадре, что и голова пингвина. */
+    updateStripVerticalFrame() {
+        try {
+            const focusZone = this.focusZone;
+            const stripContainer = document.getElementById('number-strip-container');
+            if (!focusZone || !stripContainer) return;
+
+            const focusRect = focusZone.getBoundingClientRect();
+            const parts = this.getPenguinParts();
+            const headLayer = parts?.head || null;
+            const headRect = headLayer?.getBoundingClientRect?.();
+            if (!headRect) return;
+
+            const top = headRect.top - focusRect.top;
+            const height = headRect.height;
+
+            stripContainer.style.top = `${top}px`;
+            stripContainer.style.bottom = 'auto';
+            stripContainer.style.height = `${height}px`;
+        } catch (e) {
+            // silent fallback: в худшем случае останется старое центрирование по высоте.
+        }
     }
 
     // X-координата "якоря" (куда нужно выравнивать текущий шаг ленты).

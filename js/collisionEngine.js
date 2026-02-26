@@ -1,5 +1,6 @@
 class CollisionEngine {
     constructor(options) {
+        this.perfMode = !!options.perfMode;
         this.getNumberStrip = options.getNumberStrip;
         this.getPenguinParts = options.getPenguinParts;
         this.isMouthOpen = options.isMouthOpen;
@@ -15,12 +16,22 @@ class CollisionEngine {
         this.updateStripMask = options.updateStripMask;
 
         this.deathTriggered = false;
-        this.swallowBoostState = new WeakMap();
+        this.pathPolyCache = new WeakMap();
+        this.pathLengthCache = new WeakMap();
+        this.lastLeftColliderKey = null;
+        // Базовая оптимизация для всех устройств + более агрессивный режим для слабых.
+        this.pathSampleCount = this.perfMode ? 10 : 16;
+        this.maxCandidatesPerFrame = this.perfMode ? 4 : 6;
+        this.minCheckIntervalMs = this.perfMode ? 33 : 0;
+        this.lastCheckAt = 0;
     }
 
     reset() {
         this.deathTriggered = false;
-        this.swallowBoostState = new WeakMap();
+        this.pathPolyCache = new WeakMap();
+        this.pathLengthCache = new WeakMap();
+        this.lastLeftColliderKey = null;
+        this.lastCheckAt = 0;
     }
 
     getMouthBounds(containerRect, jawTopRect, jawBotRect) {
@@ -31,129 +42,188 @@ class CollisionEngine {
         };
     }
 
-    getPolyRightBoundX(poly, containerLeft) {
-        if (!poly || poly.length === 0 || containerLeft == null) return null;
-        let maxX = -Infinity;
-        for (const p of poly) {
-            const x = p.x - containerLeft;
-            if (x > maxX) maxX = x;
-        }
-        return Number.isFinite(maxX) ? maxX : null;
-    }
-
     getNowMs() {
         return (typeof performance !== 'undefined' && typeof performance.now === 'function')
             ? performance.now()
             : Date.now();
     }
 
-    getSwallowBoostState(circle, nowMs) {
-        let state = this.swallowBoostState.get(circle);
-        if (!state) {
-            state = {
-                active: false,
-                entered: false,
-                extraOffsetX: 0,
-                targetSpeedPxMs: 0,
-                boostStartMs: 0,
-                lastTickMs: nowMs,
-                prevCenterX: null,
-                prevCenterTs: nowMs
-            };
-            this.swallowBoostState.set(circle, state);
-        }
-        return state;
+    getPathPolyCacheKey(pathEl) {
+        const cached = this.pathPolyCache.get(pathEl);
+        return cached?.key || null;
     }
 
-    clearSwallowBoost(circle, state) {
-        if (!circle) return;
-        if (state) {
-            state.active = false;
-            state.entered = false;
-            state.extraOffsetX = 0;
-            state.targetSpeedPxMs = 0;
-            state.lastTickMs = this.getNowMs();
+    getStripTranslateX(stripEl) {
+        if (!stripEl) return 0;
+        const tr = stripEl.style?.transform || '';
+        const m = tr.match(/translateX\(([-\d.]+)px\)/);
+        if (m && m[1] != null) {
+            const v = parseFloat(m[1]);
+            return Number.isFinite(v) ? v : 0;
         }
-        circle.dataset.swallowBoost = 'false';
+        return 0;
     }
 
-    applySwallowBoostTick(circle, state, nowMs) {
-        if (!circle || !state?.active) return;
-        const dtMs = Math.max(0, nowMs - (state.lastTickMs || nowMs));
-        state.lastTickMs = nowMs;
-        const targetSpeed = Number.isFinite(state.targetSpeedPxMs) ? state.targetSpeedPxMs : 0;
-        if (targetSpeed <= 0 || dtMs <= 0) return;
+    getCircleImgEl(circle) {
+        if (!circle) return null;
+        if (circle._foodImgEl?.isConnected) return circle._foodImgEl;
+        const img = circle.querySelector('img.food-img');
+        if (img) circle._foodImgEl = img;
+        return img || null;
+    }
 
-        const easeDurationMs = 360;
-        const elapsed = Math.max(0, nowMs - (state.boostStartMs || nowMs));
-        const t = Math.min(1, elapsed / easeDurationMs);
-        const easeIn = t * t;
-        const currentSpeed = targetSpeed * easeIn;
-        state.extraOffsetX -= currentSpeed * dtMs;
-        circle.style.transform = `translateX(${state.extraOffsetX.toFixed(2)}px)`;
+    getCircleColliderPath(circle) {
+        if (!circle) return null;
+        if (circle._foodColliderPath?.isConnected) return circle._foodColliderPath;
+        const path = circle.querySelector('.food-collider path');
+        if (path) circle._foodColliderPath = path;
+        return path || null;
     }
 
     getPathPolyOnScreen(pathEl, sampleCount = 20) {
         if (!pathEl || typeof pathEl.getTotalLength !== 'function') return null;
-        const len = pathEl.getTotalLength();
+        let len = this.pathLengthCache.get(pathEl);
+        if (!Number.isFinite(len) || len <= 0) {
+            len = pathEl.getTotalLength();
+            if (Number.isFinite(len) && len > 0) {
+                this.pathLengthCache.set(pathEl, len);
+            }
+        }
         if (!Number.isFinite(len) || len <= 0) return null;
         const ctm = pathEl.getScreenCTM?.();
         if (!ctm) return null;
 
-        const points = [];
         const steps = Math.max(4, sampleCount);
+        const key = [
+            steps,
+            len.toFixed(3),
+            ctm.a.toFixed(6),
+            ctm.b.toFixed(6),
+            ctm.c.toFixed(6),
+            ctm.d.toFixed(6),
+            ctm.e.toFixed(3),
+            ctm.f.toFixed(3)
+        ].join('|');
+        const cached = this.pathPolyCache.get(pathEl);
+        if (cached && cached.key === key) return cached.points;
+
+        const points = new Array(steps);
+        let pointCount = 0;
         for (let i = 0; i < steps; i += 1) {
             const t = (i / (steps - 1)) * len;
             const p = pathEl.getPointAtLength(t);
             if (!p) continue;
-            const screenPt = (typeof DOMPoint === 'function')
-                ? new DOMPoint(p.x, p.y).matrixTransform(ctm)
-                : { x: (p.x * ctm.a) + (p.y * ctm.c) + ctm.e, y: (p.x * ctm.b) + (p.y * ctm.d) + ctm.f };
-            points.push({ x: screenPt.x, y: screenPt.y });
+            points[pointCount] = {
+                x: (p.x * ctm.a) + (p.y * ctm.c) + ctm.e,
+                y: (p.x * ctm.b) + (p.y * ctm.d) + ctm.f
+            };
+            pointCount += 1;
         }
-        return points.length >= 3 ? points : null;
+        if (pointCount < 3) return null;
+        points.length = pointCount;
+        this.pathPolyCache.set(pathEl, { key, points });
+        return points;
     }
 
     polygonsOverlapSAT(polyA, polyB) {
         if (!polyA || !polyB) return false;
-        const axes = [];
-        const addAxes = (poly) => {
-            for (let i = 0; i < poly.length; i++) {
-                const a = poly[i];
-                const b = poly[(i + 1) % poly.length];
+        const aabbA = this.getPolyAABB(polyA);
+        const aabbB = this.getPolyAABB(polyB);
+        if (
+            aabbA.maxX < aabbB.minX ||
+            aabbB.maxX < aabbA.minX ||
+            aabbA.maxY < aabbB.minY ||
+            aabbB.maxY < aabbA.minY
+        ) return false;
+
+        const testAxes = (axisSourcePoly, pa, pb) => {
+            for (let i = 0; i < axisSourcePoly.length; i++) {
+                const a = axisSourcePoly[i];
+                const b = axisSourcePoly[(i + 1) % axisSourcePoly.length];
                 const dx = b.x - a.x;
                 const dy = b.y - a.y;
                 const nx = -dy;
                 const ny = dx;
-                const len = Math.hypot(nx, ny) || 1;
-                axes.push({ x: nx / len, y: ny / len });
-            }
-        };
-        addAxes(polyA);
-        addAxes(polyB);
+                const axisLen = Math.hypot(nx, ny) || 1;
+                const ax = nx / axisLen;
+                const ay = ny / axisLen;
 
-        const project = (poly, axis) => {
-            let min = Infinity;
-            let max = -Infinity;
-            for (const p of poly) {
-                const v = p.x * axis.x + p.y * axis.y;
-                if (v < min) min = v;
-                if (v > max) max = v;
-            }
-            return { min, max };
-        };
+                let minA = Infinity;
+                let maxA = -Infinity;
+                for (let j = 0; j < pa.length; j++) {
+                    const p = pa[j];
+                    const v = p.x * ax + p.y * ay;
+                    if (v < minA) minA = v;
+                    if (v > maxA) maxA = v;
+                }
 
-        for (const axis of axes) {
-            const pa = project(polyA, axis);
-            const pb = project(polyB, axis);
-            if (pa.max < pb.min || pb.max < pa.min) return false;
+                let minB = Infinity;
+                let maxB = -Infinity;
+                for (let j = 0; j < pb.length; j++) {
+                    const p = pb[j];
+                    const v = p.x * ax + p.y * ay;
+                    if (v < minB) minB = v;
+                    if (v > maxB) maxB = v;
+                }
+
+                if (maxA < minB || maxB < minA) return false;
+            }
+            return true;
+        };
+        return testAxes(polyA, polyA, polyB) && testAxes(polyB, polyA, polyB);
+    }
+
+    getPolyAABB(poly) {
+        let minX = Infinity;
+        let minY = Infinity;
+        let maxX = -Infinity;
+        let maxY = -Infinity;
+        for (let i = 0; i < poly.length; i++) {
+            const p = poly[i];
+            if (p.x < minX) minX = p.x;
+            if (p.y < minY) minY = p.y;
+            if (p.x > maxX) maxX = p.x;
+            if (p.y > maxY) maxY = p.y;
         }
-        return true;
+        return { minX, minY, maxX, maxY };
+    }
+
+    aabbToRect(aabb) {
+        if (!aabb) return null;
+        return {
+            left: aabb.minX,
+            top: aabb.minY,
+            right: aabb.maxX,
+            bottom: aabb.maxY
+        };
+    }
+
+    rectsOverlap(a, b) {
+        if (!a || !b) return false;
+        return !(a.right < b.left || b.right < a.left || a.bottom < b.top || b.bottom < a.top);
+    }
+
+    overlapFoodVsTarget(foodPoly, foodRect, targetPoly, targetRect) {
+        if (!foodRect || !targetRect) return false;
+        if (!this.rectsOverlap(foodRect, targetRect)) return false;
+        // Если обе геометрии есть — используем точную SAT-проверку даже в perfMode.
+        // Это важно для корректной логики льда (teeth 1-3 crack, 4-5 game over).
+        if (foodPoly && targetPoly) {
+            return this.polygonsOverlapSAT(foodPoly, targetPoly);
+        }
+        // Fallback для perfMode: прямоугольники.
+        if (this.perfMode) return true;
+        return false;
     }
 
     check(container) {
         const numberStrip = this.getNumberStrip?.();
         if (!numberStrip || this.deathTriggered) return;
+        const nowMs = this.getNowMs();
+        if (this.minCheckIntervalMs > 0 && (nowMs - this.lastCheckAt) < this.minCheckIntervalMs) {
+            return;
+        }
+        this.lastCheckAt = nowMs;
 
         const parts = this.getPenguinParts?.();
         if (!parts?.root) return;
@@ -166,40 +236,69 @@ class CollisionEngine {
         const { jawRight, jawTop, jawBottom } = this.getMouthBounds(containerRect, jawTopRect, jawBotRect);
         const mouthOpen = !!this.isMouthOpen?.();
         const mouthFullyClosed = !!this.isMouthFullyClosed?.();
-        const leftColliderPoly = this.getPathPolyOnScreen(parts.leftColliderPath, 24);
-        const rightColliderPoly = this.getPathPolyOnScreen(parts.rightColliderPath, 24);
-        if (this.updateStripMask && leftColliderPoly && leftColliderPoly.length >= 3) {
-            const w = containerRect.width || 1;
-            const h = containerRect.height || 1;
-            const left = containerRect.left;
-            const top = containerRect.top;
-            const norm = leftColliderPoly.map((p) => {
-                const x = Math.max(0, Math.min(1, (p.x - left) / w));
-                const y = Math.max(0, Math.min(1, (p.y - top) / h));
-                return `${x},${y}`;
-            });
-            const pathD = `M${norm.join(' L')} Z`;
-            this.updateStripMask(pathD);
-        }
-        // Полигоны всех 5 зубов: еда — только зуб 1 (индекс 0); лёд — зубы 1–4 crack, зуб 5 (индекс 4) геймовер
-        const topToothPolys = (parts.topToothColliderPaths || []).map((p) => this.getPathPolyOnScreen(p, 24)).filter(Boolean);
-        const botToothPolys = (parts.botToothColliderPaths || []).map((p) => this.getPathPolyOnScreen(p, 24)).filter(Boolean);
-        const nowMs = this.getNowMs();
+        const sampleCount = this.pathSampleCount || 24;
 
-        const circles = Array.from(numberStrip.querySelectorAll('.number-circle:not(.passed)'));
+        let leftColliderPoly = null;
+        let rightColliderPoly = null;
+        let leftColliderRect = null;
+        let rightColliderRect = null;
+        const colliderSampleCount = this.perfMode ? Math.max(8, sampleCount) : sampleCount;
+        leftColliderPoly = this.getPathPolyOnScreen(parts.leftColliderPath, colliderSampleCount);
+        rightColliderPoly = this.getPathPolyOnScreen(parts.rightColliderPath, colliderSampleCount);
+        leftColliderRect = this.aabbToRect(leftColliderPoly ? this.getPolyAABB(leftColliderPoly) : null)
+            || parts.leftColliderPath?.getBoundingClientRect?.()
+            || null;
+        rightColliderRect = this.aabbToRect(rightColliderPoly ? this.getPolyAABB(rightColliderPoly) : null)
+            || parts.rightColliderPath?.getBoundingClientRect?.()
+            || null;
+        if (!this.perfMode && this.updateStripMask && leftColliderPoly && leftColliderPoly.length >= 3) {
+            const leftKey = this.getPathPolyCacheKey(parts.leftColliderPath);
+            if (leftKey !== this.lastLeftColliderKey) {
+                const w = containerRect.width || 1;
+                const h = containerRect.height || 1;
+                const left = containerRect.left;
+                const top = containerRect.top;
+                const norm = leftColliderPoly.map((p) => {
+                    const x = Math.max(0, Math.min(1, (p.x - left) / w));
+                    const y = Math.max(0, Math.min(1, (p.y - top) / h));
+                    return `${x},${y}`;
+                });
+                const pathD = `M${norm.join(' L')} Z`;
+                this.updateStripMask(pathD);
+                this.lastLeftColliderKey = leftKey;
+            }
+        }
+
+        const stripChildren = numberStrip.children;
+        const circles = [];
+        for (let i = 0; i < stripChildren.length; i++) {
+            const child = stripChildren[i];
+            if (!child.classList?.contains('number-circle')) continue;
+            if (child.classList.contains('passed')) continue;
+            circles.push(child);
+        }
         let nearestCircle = null;
         let nearestDistance = Infinity;
         let collidingCircle = null;
         const nearbyCandidates = [];
+        const prefilterRects = new Map();
+        const stripOffsetX = this.getStripTranslateX(numberStrip);
 
         // Быстрый предфильтр: полную SAT-геометрию считаем только у объектов рядом с пастью.
         // Это убирает пиковые лаги на старте при большом количестве элементов в DOM.
-        const forwardRangePx = 260;
-        const backwardRangePx = 340;
+        const forwardRangePx = this.perfMode ? 220 : 260;
+        const backwardRangePx = this.perfMode ? 300 : 340;
         for (const circle of circles) {
             if (circle.dataset.processed === 'true') continue;
-            const r = circle.getBoundingClientRect();
-            const centerX = ((r.left + r.right) * 0.5) - containerRect.left;
+            const centerPx = parseFloat(circle.dataset.centerPx);
+            let centerX;
+            if (Number.isFinite(centerPx)) {
+                centerX = centerPx + stripOffsetX;
+            } else {
+                const r = circle.getBoundingClientRect();
+                prefilterRects.set(circle, r);
+                centerX = ((r.left + r.right) * 0.5) - containerRect.left;
+            }
             const distanceToJaw = Math.abs(centerX - jawRight);
             if (distanceToJaw < nearestDistance) {
                 nearestDistance = distanceToJaw;
@@ -210,37 +309,74 @@ class CollisionEngine {
             }
         }
         nearbyCandidates.sort((a, b) => a.distanceToJaw - b.distanceToJaw);
-        const circlesToProcess = nearbyCandidates.slice(0, 10).map((entry) => entry.circle);
+        const circlesToProcess = nearbyCandidates
+            .slice(0, this.maxCandidatesPerFrame || 8)
+            .map((entry) => entry.circle);
+
+        // Коллайдеры зубов: держим индексное соответствие 1..5, без filter(Boolean),
+        // иначе можно потерять позиционную семантику (какие зубы "опасные").
+        let topToothPolys = [];
+        let botToothPolys = [];
+        let topToothRects = [];
+        let botToothRects = [];
+        if (circlesToProcess.length > 0) {
+            const topPaths = (parts.topToothColliderPaths || []).slice(0, 5);
+            const botPaths = (parts.botToothColliderPaths || []).slice(0, 5);
+
+            topToothPolys = topPaths.map((p) => this.getPathPolyOnScreen(p, sampleCount));
+            botToothPolys = botPaths.map((p) => this.getPathPolyOnScreen(p, sampleCount));
+            topToothRects = topToothPolys.map((poly, i) =>
+                poly ? this.aabbToRect(this.getPolyAABB(poly)) : (topPaths[i]?.getBoundingClientRect?.() || null)
+            );
+            botToothRects = botToothPolys.map((poly, i) =>
+                poly ? this.aabbToRect(this.getPolyAABB(poly)) : (botPaths[i]?.getBoundingClientRect?.() || null)
+            );
+        }
 
         for (const circle of circlesToProcess) {
             if (circle.dataset.processed === 'true') continue;
             const itemType = circle.dataset?.itemType || 'food';
             const isCoin = itemType === 'coin';
             const isIce = itemType === 'ice';
-            const boostState = this.getSwallowBoostState(circle, nowMs);
 
-            const circleRect = circle.getBoundingClientRect();
-            const imgEl = circle.querySelector('img.food-img');
-            const imgRect = imgEl?.getBoundingClientRect?.() || null;
+            const imgEl = this.getCircleImgEl(circle);
+            const colliderPath = this.getCircleColliderPath(circle);
+            let foodPoly = null;
+            // В perf-режиме считаем точный полигон хотя бы для льда,
+            // чтобы не ловить ложный game over от грубого прямоугольника.
+            const needsPreciseFoodPoly = !this.perfMode || isIce;
+            if (needsPreciseFoodPoly) {
+                const foodSampleCount = this.perfMode ? Math.max(8, sampleCount) : sampleCount;
+                foodPoly = (colliderPath && this.getPathPolyOnScreen(colliderPath, foodSampleCount)) || null;
+            }
+            let foodRectPage = null;
+            let imgLeft = 0;
+            let imgRight = 0;
+            let imgTop = 0;
+            let imgBottom = 0;
 
-            const imgLeft = (imgRect ? imgRect.left : circleRect.left) - containerRect.left;
-            const imgRight = (imgRect ? imgRect.right : circleRect.right) - containerRect.left;
-            const imgTop = (imgRect ? imgRect.top : circleRect.top) - containerRect.top;
-            const imgBottom = (imgRect ? imgRect.bottom : circleRect.bottom) - containerRect.top;
-            const imgCenterX = (imgLeft + imgRight) / 2;
-            const dtObsMs = Math.max(1, nowMs - (boostState.prevCenterTs || nowMs));
-            const observedSpeedPxMs = (boostState.prevCenterX != null)
-                ? Math.abs((imgCenterX - boostState.prevCenterX) / dtObsMs)
-                : 0;
-            boostState.prevCenterX = imgCenterX;
-            boostState.prevCenterTs = nowMs;
-
-            const foodRectPage = imgRect || circleRect;
-            const overlapsMouthVert = (imgBottom >= jawTop) && (imgTop <= jawBottom);
-
-            const colliderPath = circle.querySelector('.food-collider path');
-            let foodPoly = (colliderPath && this.getPathPolyOnScreen(colliderPath, 24)) || null;
-            if (!foodPoly) {
+            if (foodPoly && foodPoly.length >= 3) {
+                const polyAabb = this.getPolyAABB(foodPoly);
+                imgLeft = polyAabb.minX - containerRect.left;
+                imgRight = polyAabb.maxX - containerRect.left;
+                imgTop = polyAabb.minY - containerRect.top;
+                imgBottom = polyAabb.maxY - containerRect.top;
+                foodRectPage = {
+                    left: polyAabb.minX,
+                    right: polyAabb.maxX,
+                    top: polyAabb.minY,
+                    bottom: polyAabb.maxY
+                };
+            } else {
+                const circleRect = prefilterRects.get(circle) || circle.getBoundingClientRect();
+                const imgRect = imgEl?.getBoundingClientRect?.() || null;
+                foodRectPage = imgRect || circleRect;
+                imgLeft = foodRectPage.left - containerRect.left;
+                imgRight = foodRectPage.right - containerRect.left;
+                imgTop = foodRectPage.top - containerRect.top;
+                imgBottom = foodRectPage.bottom - containerRect.top;
+                // Даже в perfMode держим прямоугольный полигон объекта:
+                // это даёт корректную SAT с полигоном зуба при минимальной цене.
                 foodPoly = [
                     { x: foodRectPage.left, y: foodRectPage.top },
                     { x: foodRectPage.right, y: foodRectPage.top },
@@ -248,37 +384,89 @@ class CollisionEngine {
                     { x: foodRectPage.left, y: foodRectPage.bottom }
                 ];
             }
+
+            const overlapsMouthVert = (imgBottom >= jawTop) && (imgTop <= jawBottom);
+            const foodRectForCollision = foodRectPage || {
+                left: imgLeft + containerRect.left,
+                right: imgRight + containerRect.left,
+                top: imgTop + containerRect.top,
+                bottom: imgBottom + containerRect.top
+            };
             // Объект начинает исчезать (проглатывание) только при касании left-collider (не лёд)
-            const foodTouchesLeftCollider = leftColliderPoly && this.polygonsOverlapSAT(foodPoly, leftColliderPoly);
+            const foodTouchesLeftCollider = this.overlapFoodVsTarget(
+                foodPoly,
+                foodRectForCollision,
+                leftColliderPoly,
+                leftColliderRect
+            );
             const swallowTrigger = mouthOpen && foodTouchesLeftCollider;
             // Еда/монета: коллизия только с 1-м зубом (индекс 0)
             const topTooth1 = topToothPolys[0];
             const botTooth1 = botToothPolys[0];
-            const topCollision1 = topTooth1 && this.polygonsOverlapSAT(foodPoly, topTooth1);
-            const botCollision1 = botTooth1 && this.polygonsOverlapSAT(foodPoly, botTooth1);
+            const topCollision1 = this.overlapFoodVsTarget(
+                foodPoly,
+                foodRectForCollision,
+                topTooth1,
+                topToothRects[0]
+            );
+            const botCollision1 = this.overlapFoodVsTarget(
+                foodPoly,
+                foodRectForCollision,
+                botTooth1,
+                botToothRects[0]
+            );
             const teethCollision1 = topCollision1 || botCollision1;
             // Лёд: зубы 4–5 (индексы 3–4) = геймовер; зубы 1–3 (индексы 0–2) = расщелкивание
             const topTooth4 = topToothPolys[3];
             const topTooth5 = topToothPolys[4];
             const botTooth4 = botToothPolys[3];
             const botTooth5 = botToothPolys[4];
-            const iceHitTooth4 = (topTooth4 && this.polygonsOverlapSAT(foodPoly, topTooth4))
-                || (botTooth4 && this.polygonsOverlapSAT(foodPoly, botTooth4));
-            const iceHitTooth5 = (topTooth5 && this.polygonsOverlapSAT(foodPoly, topTooth5))
-                || (botTooth5 && this.polygonsOverlapSAT(foodPoly, botTooth5));
+            const iceHitTooth4 = this.overlapFoodVsTarget(
+                foodPoly,
+                foodRectForCollision,
+                topTooth4,
+                topToothRects[3]
+            ) || this.overlapFoodVsTarget(
+                foodPoly,
+                foodRectForCollision,
+                botTooth4,
+                botToothRects[3]
+            );
+            const iceHitTooth5 = this.overlapFoodVsTarget(
+                foodPoly,
+                foodRectForCollision,
+                topTooth5,
+                topToothRects[4]
+            ) || this.overlapFoodVsTarget(
+                foodPoly,
+                foodRectForCollision,
+                botTooth5,
+                botToothRects[4]
+            );
             let iceCrack = false;
-            if (isIce && !mouthOpen && !mouthFullyClosed) {
-                for (let i = 0; i <= 2 && i < topToothPolys.length; i++) {
-                    if (topToothPolys[i] && this.polygonsOverlapSAT(foodPoly, topToothPolys[i])) { iceCrack = true; break; }
+            if (isIce && !mouthFullyClosed && (!mouthOpen || this.perfMode)) {
+                for (let i = 0; i <= 2 && i < topToothRects.length; i++) {
+                    if (this.overlapFoodVsTarget(foodPoly, foodRectForCollision, topToothPolys[i], topToothRects[i])) {
+                        iceCrack = true;
+                        break;
+                    }
                 }
                 if (!iceCrack) {
-                    for (let i = 0; i <= 2 && i < botToothPolys.length; i++) {
-                        if (botToothPolys[i] && this.polygonsOverlapSAT(foodPoly, botToothPolys[i])) { iceCrack = true; break; }
+                    for (let i = 0; i <= 2 && i < botToothRects.length; i++) {
+                        if (this.overlapFoodVsTarget(foodPoly, foodRectForCollision, botToothPolys[i], botToothRects[i])) {
+                            iceCrack = true;
+                            break;
+                        }
                     }
                 }
             }
 
-            const rightColliderHit = this.polygonsOverlapSAT(foodPoly, rightColliderPoly);
+            const rightColliderHit = this.overlapFoodVsTarget(
+                foodPoly,
+                foodRectForCollision,
+                rightColliderPoly,
+                rightColliderRect
+            );
             const closedMouthLeftHit = mouthFullyClosed && overlapsMouthVert && rightColliderHit;
             const timingJawHit = (!mouthOpen) && (!mouthFullyClosed) && teethCollision1;
             const foodDeathCollision = timingJawHit || closedMouthLeftHit;
@@ -295,11 +483,11 @@ class CollisionEngine {
             // - Коины начисляются только при реальном укусе: обе челюсти захватили монетку и рот ещё не полностью закрыт (момент сжатия).
             // - Если рот уже полностью закрыт и монетка касается рта/зубов — это опасный контакт (смерть или поглощение щитом), коины не даём, монетка просто исчезает.
             // - Проглоченная монетка (прошла вглубь при открытом рте) даёт обычные очки, как еда.
-            const topCollision = topTooth1 && this.polygonsOverlapSAT(foodPoly, topTooth1);
-            const botCollision = botTooth1 && this.polygonsOverlapSAT(foodPoly, botTooth1);
+            const topCollision = topCollision1;
+            const botCollision = botCollision1;
             const coinBothJaws = topCollision && botCollision;
             const coinBiteCollision = coinBothJaws && !mouthFullyClosed;
-            const coinDeathCollision = mouthFullyClosed && (rightColliderHit || (topTooth1 && this.polygonsOverlapSAT(foodPoly, topTooth1)) || (botTooth1 && this.polygonsOverlapSAT(foodPoly, botTooth1)));
+            const coinDeathCollision = mouthFullyClosed && (rightColliderHit || topCollision || botCollision);
             const isDeathCollision = isIce ? iceDeathCollision : (isCoin ? coinDeathCollision : foodDeathCollision);
 
             if (this.isDebug?.()) {
@@ -308,7 +496,6 @@ class CollisionEngine {
             }
 
             if (isDeathCollision) {
-                this.clearSwallowBoost(circle, boostState);
                 collidingCircle = circle;
                 const value = parseInt(circle.dataset.value, 10) || 0;
                 const reason = iceDeathCollision
@@ -355,18 +542,15 @@ class CollisionEngine {
             if (iceCrack) {
                 circle.dataset.processed = 'true';
                 circle.classList.add('passed', 'consumed');
-                const imgEl = circle.querySelector('img.food-img');
                 if (imgEl) imgEl.style.opacity = '0';
                 this.emitEvent?.('ICE_CRACKED', { circle });
                 return;
             }
 
             if (isCoin && coinBiteCollision) {
-                this.clearSwallowBoost(circle, boostState);
                 const value = parseInt(circle.dataset.value, 10) || 0;
                 circle.dataset.processed = 'true';
                 circle.classList.add('passed', 'consumed');
-                const imgEl = circle.querySelector('img.food-img');
                 if (imgEl) imgEl.style.opacity = '0';
                 const centerX = (imgLeft + imgRight) / 2;
                 const centerY = (imgTop + imgBottom) / 2;
@@ -378,14 +562,10 @@ class CollisionEngine {
             // Лёд не исчезает при проходе вглубь — только при расщелкивании (зубы 1–4) или геймовере (зуб 5)
             if (swallowTrigger && !isIce) {
                 // Фаза 2: объект покинул left-collider -> безопасен и запускаем анимацию проглатывания.
-                boostState.active = false;
-                circle.dataset.swallowBoost = 'false';
-                circle.dataset.safeAfterLeftCollider = 'true';
                 const value = parseInt(circle.dataset.value, 10) || 0;
                 circle.dataset.processed = 'true';
                 if (isCoin) {
                     circle.classList.add('passed', 'consumed');
-                    const imgEl = circle.querySelector('img.food-img');
                     if (imgEl) imgEl.style.opacity = '0';
                     this.dbgLog?.('coin', { value, action: 'swallowed' }, 120);
                     this.emitEvent?.('COIN_SWALLOWED', { value });
@@ -425,10 +605,11 @@ class CollisionEngine {
             let trackedDangerRect = null;
             let trackedDangerPoly = null;
             if (tracked) {
-                const tr = tracked.querySelector('img.food-img')?.getBoundingClientRect?.() || tracked.getBoundingClientRect();
+                const trackedImg = this.getCircleImgEl(tracked);
+                const tr = trackedImg?.getBoundingClientRect?.() || tracked.getBoundingClientRect();
                 trackedDangerRect = tr;
-                const tp = tracked.querySelector('.food-collider path');
-                trackedDangerPoly = (tp && this.getPathPolyOnScreen(tp, 24)) || null;
+                const tp = this.getCircleColliderPath(tracked);
+                trackedDangerPoly = (tp && this.getPathPolyOnScreen(tp, sampleCount)) || null;
                 if (!trackedDangerPoly && tr) {
                     trackedDangerPoly = [
                         { x: tr.left, y: tr.top },

@@ -5,7 +5,26 @@ class RendererUI {
         this.leaderboardTableBody = document.getElementById('leaderboard-table-body');
         this.leaderboardMeEl = document.getElementById('leaderboard-me');
         this.leaderboardCloseBtn = document.getElementById('leaderboard-close-btn');
-
+        this.el = {
+            scoreValue: document.getElementById('score-value'),
+            bestScore: document.getElementById('best-score'),
+            bestRank: document.getElementById('best-rank'),
+            streakProgress: document.getElementById('streak-progress'),
+            coinRushCounter: document.getElementById('coin-rush-counter'),
+            coinRushButton: document.getElementById('coin-rush-button'),
+            slowdownBtn: document.getElementById('slowdown-btn'),
+            soundBtn: document.getElementById('sound-btn'),
+            slowWrap: document.getElementById('slow-btn-wrap'),
+            shieldWrap: document.getElementById('shield-btn-wrap'),
+            shieldBtn: document.getElementById('shield-btn'),
+            perksCoins: document.getElementById('perks-coins-count'),
+            pauseSoundIcon: document.getElementById('pause-sound-icon'),
+            pauseSoundText: document.getElementById('pause-sound-text')
+        };
+        this.el.coinRushSegments = this.el.streakProgress?.querySelectorAll('.coin-rush-segment-fill') || [];
+        this.el.slowCount = this.el.slowWrap?.querySelector('.action-spell-count') || null;
+        this.el.shieldCount = this.el.shieldWrap?.querySelector('.action-spell-count') || null;
+        this.el.soundIcon = this.el.soundBtn?.querySelector('img') || null;
         this._lastStreak = 0;
         this._boundUpdateLeaderboardFade = this._updateLeaderboardFadeOverlays.bind(this);
         if (this.leaderboardListEl && this.leaderboardTableBody) {
@@ -20,16 +39,15 @@ class RendererUI {
     }
 
     updateUI(state) {
-        const scoreValueEl = document.getElementById('score-value');
-        const bestScoreEl = document.getElementById('best-score');
-        const bestRankEl = document.getElementById('best-rank');
-        const bestHintEl = document.getElementById('best-hint');
-        const streakProgressEl = document.getElementById('streak-progress');
-        const coinRushCounterEl = document.getElementById('coin-rush-counter');
-        const coinRushSegments = streakProgressEl?.querySelectorAll('.coin-rush-segment-fill') || [];
-        const coinRushButton = document.getElementById('coin-rush-button');
-        const slowdownBtn = document.getElementById('slowdown-btn');
-        const soundBtn = document.getElementById('sound-btn');
+        const scoreValueEl = this.el.scoreValue;
+        const bestScoreEl = this.el.bestScore;
+        const bestRankEl = this.el.bestRank;
+        const streakProgressEl = this.el.streakProgress;
+        const coinRushCounterEl = this.el.coinRushCounter;
+        const coinRushSegments = this.el.coinRushSegments;
+        const coinRushButton = this.el.coinRushButton;
+        const slowdownBtn = this.el.slowdownBtn;
+        const soundBtn = this.el.soundBtn;
 
         const score = Math.floor(state?.score ?? 0);
         const best = Math.floor(state?.bestScore ?? 0);
@@ -40,14 +58,22 @@ class RendererUI {
         const slowCooldownSec = Math.ceil(Math.max(0, state?.slowCooldownRemainingMs || 0) / 1000);
         const shieldCooldownSec = Math.ceil(Math.max(0, state?.shieldCooldownRemainingMs || 0) / 1000);
 
-        if (scoreValueEl) scoreValueEl.textContent = score;
-        if (bestScoreEl) bestScoreEl.textContent = best;
+        if (scoreValueEl) {
+            const txt = String(score);
+            if (scoreValueEl.textContent !== txt) scoreValueEl.textContent = txt;
+        }
+        if (bestScoreEl) {
+            const txt = String(best);
+            if (bestScoreEl.textContent !== txt) bestScoreEl.textContent = txt;
+        }
         if (bestRankEl) {
-            bestRankEl.textContent = rank && rank > 0 ? `#${rank}` : '#—';
+            const txt = rank && rank > 0 ? `#${rank}` : '#—';
+            if (bestRankEl.textContent !== txt) bestRankEl.textContent = txt;
         }
 
         if (coinRushCounterEl) {
-            coinRushCounterEl.textContent = state?.coinRushActive ? 'RUSH!' : `${rushProgress}/${rushTarget}`;
+            const txt = state?.coinRushActive ? 'RUSH!' : `${rushProgress}/${rushTarget}`;
+            if (coinRushCounterEl.textContent !== txt) coinRushCounterEl.textContent = txt;
         }
         const segmentCount = Math.max(1, coinRushSegments.length || 1);
         const ratio = Math.max(0, Math.min(1, rushTarget > 0 ? (rushProgress / rushTarget) : 0));
@@ -55,7 +81,9 @@ class RendererUI {
             const segmentStart = i / segmentCount;
             const segmentEnd = (i + 1) / segmentCount;
             const local = ratio <= segmentStart ? 0 : Math.min(1, (ratio - segmentStart) / Math.max(0.0001, (segmentEnd - segmentStart)));
-            if (fillEl) fillEl.style.width = `${(local * 100).toFixed(2)}%`;
+            if (!fillEl) return;
+            const width = `${(local * 100).toFixed(2)}%`;
+            if (fillEl.style.width !== width) fillEl.style.width = width;
         });
 
         if (streakProgressEl) {
@@ -90,11 +118,11 @@ class RendererUI {
             slowdownBtn.title = slowCooldownSec > 0 ? `Slow cooldown: ${slowCooldownSec}s` : 'Slow time';
         }
 
-        const slowWrap = document.getElementById('slow-btn-wrap');
-        const shieldWrap = document.getElementById('shield-btn-wrap');
-        const shieldBtn = document.getElementById('shield-btn');
-        const slowCountEl = slowWrap?.querySelector('.action-spell-count');
-        const shieldCountEl = shieldWrap?.querySelector('.action-spell-count');
+        const slowWrap = this.el.slowWrap;
+        const shieldWrap = this.el.shieldWrap;
+        const shieldBtn = this.el.shieldBtn;
+        const slowCountEl = this.el.slowCount;
+        const shieldCountEl = this.el.shieldCount;
 
         if (slowWrap) {
             slowWrap.classList.toggle('depleted', slowSpellCount <= 0);
@@ -103,11 +131,13 @@ class RendererUI {
             shieldWrap.classList.toggle('depleted', shieldSpellCount <= 0);
         }
         if (slowCountEl) {
-            slowCountEl.textContent = `x${slowSpellCount}`;
+            const txt = `x${slowSpellCount}`;
+            if (slowCountEl.textContent !== txt) slowCountEl.textContent = txt;
             slowCountEl.dataset.count = String(slowSpellCount);
         }
         if (shieldCountEl) {
-            shieldCountEl.textContent = `x${shieldSpellCount}`;
+            const txt = `x${shieldSpellCount}`;
+            if (shieldCountEl.textContent !== txt) shieldCountEl.textContent = txt;
             shieldCountEl.dataset.count = String(shieldSpellCount);
         }
         if (shieldBtn) {
@@ -119,31 +149,36 @@ class RendererUI {
                 : (shieldCooldownSec > 0 ? `Shield cooldown: ${shieldCooldownSec}s` : 'Shield');
         }
 
-        const perksCoinsEl = document.getElementById('perks-coins-count');
+        const perksCoinsEl = this.el.perksCoins;
         if (perksCoinsEl) {
-            perksCoinsEl.textContent = Math.max(0, state?.coins ?? 0);
+            const txt = String(Math.max(0, state?.coins ?? 0));
+            if (perksCoinsEl.textContent !== txt) perksCoinsEl.textContent = txt;
         }
 
         if (soundBtn) {
-            const icon = soundBtn.querySelector('img');
+            const icon = this.el.soundIcon;
             if (icon) {
-                icon.src = state?.soundMuted ? 'img/ui/sound-off.svg' : 'img/ui/sound-on.svg';
+                const src = state?.soundMuted ? 'img/ui/sound-off.svg' : 'img/ui/sound-on.svg';
+                if (icon.getAttribute('src') !== src) icon.src = src;
             }
             soundBtn.classList.toggle('is-muted', !!state?.soundMuted);
         }
 
-        const pauseSoundIcon = document.getElementById('pause-sound-icon');
-        const pauseSoundText = document.getElementById('pause-sound-text');
+        const pauseSoundIcon = this.el.pauseSoundIcon;
+        const pauseSoundText = this.el.pauseSoundText;
         if (pauseSoundIcon) {
-            pauseSoundIcon.src = state?.soundMuted ? 'img/ui/sound-off.svg' : 'img/ui/sound-on.svg';
+            const src = state?.soundMuted ? 'img/ui/sound-off.svg' : 'img/ui/sound-on.svg';
+            if (pauseSoundIcon.getAttribute('src') !== src) pauseSoundIcon.src = src;
         }
         if (pauseSoundText) {
             const muted = !!state?.soundMuted;
+            let text;
             if (window.I18N && typeof window.I18N.t === 'function') {
-                pauseSoundText.textContent = window.I18N.t(muted ? 'PAUSE_SOUND_OFF' : 'PAUSE_SOUND_ON');
+                text = window.I18N.t(muted ? 'PAUSE_SOUND_OFF' : 'PAUSE_SOUND_ON');
             } else {
-                pauseSoundText.textContent = muted ? 'SOUND: OFF' : 'SOUND: ON';
+                text = muted ? 'SOUND: OFF' : 'SOUND: ON';
             }
+            if (pauseSoundText.textContent !== text) pauseSoundText.textContent = text;
         }
     }
 

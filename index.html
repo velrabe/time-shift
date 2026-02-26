@@ -184,7 +184,7 @@
                 <div id="slow-btn-wrap" class="action-btn-wrap action-btn--spell">
                     <button
                         id="slowdown-btn"
-                        class="action-spell-btn perk-btn"
+                        class="action-spell-btn"
                         type="button"
                         disabled
                         aria-label="Slow time"
@@ -454,7 +454,24 @@
             k=e.createElement(t),a=e.getElementsByTagName(t)[0],k.async=1,k.src=r,a.parentNode.insertBefore(k,a)
         })(window, document,'script','https://mc.yandex.ru/metrika/tag.js?id=106150752', 'ym');
 
-        ym(106150752, 'init', {ssr:true, webvisor:true, clickmap:true, ecommerce:"dataLayer", accurateTrackBounce:true, trackLinks:true});
+        (function () {
+            var coarse = false;
+            try {
+                coarse = !!(window.matchMedia && window.matchMedia('(hover: none) and (pointer: coarse)').matches);
+            } catch (e) {}
+            var lowCpu = !!(navigator && navigator.hardwareConcurrency && navigator.hardwareConcurrency <= 6);
+            var lowMem = !!(navigator && navigator.deviceMemory && navigator.deviceMemory <= 6);
+            var saveData = !!(navigator && navigator.connection && navigator.connection.saveData);
+            var lightweight = coarse || lowCpu || lowMem || saveData;
+            ym(106150752, 'init', {
+                ssr: true,
+                webvisor: !lightweight,
+                clickmap: !lightweight,
+                ecommerce: "dataLayer",
+                accurateTrackBounce: true,
+                trackLinks: true
+            });
+        })();
     </script>
     <noscript><div><img src="https://mc.yandex.ru/watch/106150752" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
     <!-- /Yandex.Metrika counter -->
@@ -477,4 +494,3 @@
     <script src="js/main.js"></script>
 </body>
 </html>
-

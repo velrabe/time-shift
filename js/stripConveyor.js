@@ -1,6 +1,7 @@
 class StripConveyorSystem {
     constructor(options) {
         this.numberStrip = options.numberStrip || null;
+        this.perfMode = !!options.perfMode;
         this.getGameArea = options.getGameArea;
         this.getFocusAnchorX = options.getFocusAnchorX;
         this.ensureFoodCircle = options.ensureFoodCircle;
@@ -8,12 +9,14 @@ class StripConveyorSystem {
         this.checkCollisionsAndAutoBite = options.checkCollisionsAndAutoBite;
 
         // Меньшее окно снижает пиковую нагрузку при старте (DOM + SVG decode + коллизии).
-        this.stripHalfWindow = 18;
+        this.stripHalfWindow = this.perfMode ? 12 : 18;
         this.stripRecycleMargin = 6;
         this.stripMinValue = 0;
         this.stripPitchPx = null;
         this.stripFirstCenterPx = null;
         this.currentStripOffset = 0;
+        this.metricsDirty = true;
+        this.lastClassUpdateValue = null;
 
         this.beltSpeed = 0.08;
         this.beltEatGrowth = 1.03;
@@ -52,6 +55,8 @@ class StripConveyorSystem {
         this.denseRunCount = 0;
         this.chunksSinceCoin = 0;
         this.chunksUntilCoin = this.rollChunksUntilCoin();
+
+        this.applyResponsiveSizing();
     }
 
     resetWindow() {
@@ -64,6 +69,8 @@ class StripConveyorSystem {
         this.stripPitchPx = null;
         this.stripFirstCenterPx = null;
         this.currentStripOffset = 0;
+        this.metricsDirty = true;
+        this.lastClassUpdateValue = null;
 
         this.beltPosition = 0;
         this.lastBeltUpdateTime = 0;
@@ -119,8 +126,43 @@ class StripConveyorSystem {
         circleEl.dataset.sizeScale = String(meta.sizeScale);
         circleEl.dataset.gapTimeSec = String(meta.gapTimeSec);
         circleEl.dataset.spawnGapPx = String(rightGapPx);
+        circleEl.dataset.marginLeftPx = String(leftGapPx);
         circleEl.style.marginLeft = `${leftGapPx}px`;
         circleEl.style.marginRight = `${rightGapPx}px`;
+        this.markMetricsDirty();
+    }
+
+    markMetricsDirty() {
+        this.metricsDirty = true;
+    }
+
+    getGameScale() {
+        try {
+            const rootStyle = window.getComputedStyle(document.documentElement);
+            const value = parseFloat(rootStyle.getPropertyValue('--game-scale'));
+            if (Number.isFinite(value) && value > 0) return value;
+        } catch (e) {
+            // ignore
+        }
+        return 1;
+    }
+
+    applyResponsiveSizing() {
+        const scale = this.getGameScale();
+        this.objectGapBaseLeftPx = Math.max(2, Math.round(4 * scale));
+    }
+
+    refreshVisibleCircleSizing() {
+        if (!this.numberStrip) return;
+        this.applyResponsiveSizing();
+        const leftGapPx = Math.max(0, Math.floor(this.objectGapBaseLeftPx ?? 4));
+        const children = this.numberStrip.children;
+        for (let i = 0; i < children.length; i++) {
+            const el = children[i];
+            el.dataset.marginLeftPx = String(leftGapPx);
+            el.style.marginLeft = `${leftGapPx}px`;
+        }
+        this.markMetricsDirty();
     }
 
     getMinGapTimeSec() {
@@ -401,7 +443,7 @@ class StripConveyorSystem {
         const nowMs = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
         if (this.lastBeltUpdateTime === 0) {
             this.ensureStripWindowInitialized(0);
-            this.recomputeStripMetrics();
+            if (this.metricsDirty) this.recomputeStripMetrics();
             this.adjustInitialBeltPosition();
             this.lastBeltUpdateTime = nowMs - 16;
         }
@@ -430,7 +472,7 @@ class StripConveyorSystem {
         const baseSpeed = this.beltSpeed * (Number.isFinite(speedMultiplier) ? speedMultiplier : 1) * eatMult;
         this.beltPosition += (baseSpeed * deltaTime);
 
-        this.recomputeStripMetrics();
+        if (this.metricsDirty) this.recomputeStripMetrics();
         if (this.stripPitchPx == null || this.stripFirstCenterPx == null) return;
 
         let segment = this.getWorldSegmentByBeltPosition(this.beltPosition);
@@ -438,11 +480,13 @@ class StripConveyorSystem {
         let currentValue = segment.currentValue;
 
         this.ensureStripWindowInitialized(currentValue);
-        this.maybeRecycleStripWindow(currentValue);
-        this.recomputeStripMetrics();
-        segment = this.getWorldSegmentByBeltPosition(this.beltPosition);
-        if (!segment) return;
-        currentValue = segment.currentValue;
+        const recycled = this.maybeRecycleStripWindow(currentValue);
+        if (recycled || this.metricsDirty) {
+            this.recomputeStripMetrics();
+            segment = this.getWorldSegmentByBeltPosition(this.beltPosition);
+            if (!segment) return;
+            currentValue = segment.currentValue;
+        }
         this.updateStripClasses(currentValue);
 
         const container = this.getGameArea?.();
@@ -491,13 +535,15 @@ class StripConveyorSystem {
             this.numberStrip.appendChild(circleEl);
         }
         this.stripMinValue = minValue;
+        this.lastClassUpdateValue = null;
+        this.markMetricsDirty();
         this.recomputeStripMetrics();
     }
 
     maybeRecycleStripWindow(current) {
-        if (!this.numberStrip || this.stripPitchPx == null) return;
+        if (!this.numberStrip || this.stripPitchPx == null) return false;
         const count = this.numberStrip.children.length;
-        if (count === 0) return;
+        if (count === 0) return false;
 
         const min = this.stripMinValue ?? parseInt(this.numberStrip.firstElementChild.dataset.value, 10);
         const max = min + count - 1;
@@ -507,14 +553,16 @@ class StripConveyorSystem {
         const rightEdge = max - margin;
 
         if (min === 0 && current <= leftEdge) {
-            return;
+            return false;
         }
 
         if (current > rightEdge) {
             const shift = current - (min + (count - 1) / 2);
             const steps = Math.max(0, Math.floor(shift));
             this.shiftStripWindowBy(steps);
+            return steps > 0;
         }
+        return false;
     }
 
     shiftStripWindowBy(deltaSteps) {
@@ -572,11 +620,15 @@ class StripConveyorSystem {
         this.stripMinValue = min;
         this.numberStrip.style.transition = 'none';
         this.numberStrip.style.transform = `translateX(${this.currentStripOffset}px)`;
+        this.lastClassUpdateValue = null;
+        this.markMetricsDirty();
     }
 
     updateStripClasses(current) {
-        const existingElements = Array.from(this.numberStrip.children);
-        existingElements.forEach((el) => {
+        if (this.lastClassUpdateValue === current) return;
+        const existingElements = this.numberStrip.children;
+        for (let i = 0; i < existingElements.length; i++) {
+            const el = existingElements[i];
             const value = parseInt(el.dataset.value, 10);
             const isPassed = el.classList.contains('passed') || value < current;
             if (isPassed) {
@@ -592,45 +644,61 @@ class StripConveyorSystem {
 
             if (value === current) el.classList.add('active');
             else el.classList.remove('active');
-        });
+        }
+        this.lastClassUpdateValue = current;
     }
 
     recomputeStripMetrics() {
         if (!this.numberStrip) return;
-        const circles = Array.from(this.numberStrip.querySelectorAll('.number-circle'));
-        if (circles.length === 0) return;
+        const circles = this.numberStrip.children;
+        const count = circles.length;
+        if (count === 0) return;
 
-        this.rebuildWorldCoordinates(circles);
-        this.stripFirstCenterPx = this.getCircleCenterInStrip(circles[0]);
-        if (circles.length < 2) {
+        const centers = this.rebuildWorldCoordinates(circles);
+        this.stripFirstCenterPx = centers[0];
+        if (count < 2) {
             if (!Number.isFinite(this.stripPitchPx) || this.stripPitchPx <= 0) this.stripPitchPx = 96;
+            this.metricsDirty = false;
             return;
         }
 
-        const distances = [];
-        for (let i = 0; i < circles.length - 1; i++) {
-            const a = this.getCircleCenterInStrip(circles[i]);
-            const b = this.getCircleCenterInStrip(circles[i + 1]);
+        let distancesSum = 0;
+        let distancesCount = 0;
+        for (let i = 0; i < count - 1; i++) {
+            const a = centers[i];
+            const b = centers[i + 1];
             const d = b - a;
-            if (Number.isFinite(d) && d > 1) distances.push(d);
+            if (Number.isFinite(d) && d > 1) {
+                distancesSum += d;
+                distancesCount += 1;
+            }
         }
 
-        if (distances.length > 0) {
-            const sum = distances.reduce((acc, d) => acc + d, 0);
-            this.stripPitchPx = sum / distances.length;
+        if (distancesCount > 0) {
+            this.stripPitchPx = distancesSum / distancesCount;
         } else if (!Number.isFinite(this.stripPitchPx) || this.stripPitchPx <= 0) {
             this.stripPitchPx = 96;
         }
+        this.metricsDirty = false;
     }
 
     rebuildWorldCoordinates(circlesInput) {
-        const circles = Array.isArray(circlesInput)
-            ? circlesInput
-            : Array.from(this.numberStrip?.querySelectorAll?.('.number-circle') || []);
-        if (circles.length === 0) return;
+        const circles = circlesInput || this.numberStrip?.children;
+        const count = circles?.length || 0;
+        if (count === 0) return [];
 
-        const centers = circles.map((el) => this.getCircleCenterInStrip(el));
-        let anchorIndex = circles.findIndex((el) => Number.isFinite(parseFloat(el.dataset.worldX)));
+        const centers = new Array(count);
+        for (let i = 0; i < count; i++) {
+            centers[i] = this.getCircleCenterInStrip(circles[i]);
+            circles[i].dataset.centerPx = String(centers[i]);
+        }
+        let anchorIndex = -1;
+        for (let i = 0; i < count; i++) {
+            if (Number.isFinite(parseFloat(circles[i].dataset.worldX))) {
+                anchorIndex = i;
+                break;
+            }
+        }
         if (anchorIndex < 0) anchorIndex = 0;
 
         let anchorWorld = parseFloat(circles[anchorIndex].dataset.worldX);
@@ -642,7 +710,7 @@ class StripConveyorSystem {
         circles[anchorIndex].dataset.worldX = String(anchorWorld);
 
         let world = anchorWorld;
-        for (let i = anchorIndex + 1; i < circles.length; i++) {
+        for (let i = anchorIndex + 1; i < count; i++) {
             const dist = Math.max(1, centers[i] - centers[i - 1]);
             world += dist;
             circles[i].dataset.worldX = String(world);
@@ -654,22 +722,37 @@ class StripConveyorSystem {
             world -= dist;
             circles[i].dataset.worldX = String(world);
         }
+        return centers;
     }
 
     getWorldSegmentByBeltPosition(positionWorld) {
         if (!this.numberStrip) return null;
-        const circles = Array.from(this.numberStrip.querySelectorAll('.number-circle'));
-        if (circles.length === 0) return null;
+        const circles = this.numberStrip.children;
+        const count = circles.length;
+        if (count === 0) return null;
 
-        const nodes = circles.map((el) => ({
-            el,
-            value: parseInt(el.dataset.value, 10) || 0,
-            world: parseFloat(el.dataset.worldX),
-            center: this.getCircleCenterInStrip(el)
-        }));
-        if (nodes.some((n) => !Number.isFinite(n.world))) {
+        const nodes = new Array(count);
+        let hasInvalidWorld = false;
+        for (let i = 0; i < count; i++) {
+            const el = circles[i];
+            const world = parseFloat(el.dataset.worldX);
+            nodes[i] = {
+                el,
+                value: parseInt(el.dataset.value, 10) || 0,
+                world,
+                center: Number.isFinite(parseFloat(el.dataset.centerPx))
+                    ? parseFloat(el.dataset.centerPx)
+                    : this.getCircleCenterInStrip(el)
+            };
+            if (!Number.isFinite(world)) hasInvalidWorld = true;
+        }
+        if (hasInvalidWorld) {
             this.rebuildWorldCoordinates(circles);
-            nodes.forEach((n) => { n.world = parseFloat(n.el.dataset.worldX); });
+            for (let i = 0; i < nodes.length; i++) {
+                nodes[i].world = parseFloat(nodes[i].el.dataset.worldX);
+                const c = parseFloat(nodes[i].el.dataset.centerPx);
+                if (Number.isFinite(c)) nodes[i].center = c;
+            }
         }
         if (nodes.length === 1) {
             return {
@@ -727,8 +810,7 @@ class StripConveyorSystem {
 
     getCircleCenterInStrip(circleEl) {
         if (!circleEl) return 0;
-        const style = window.getComputedStyle(circleEl);
-        const ml = parseFloat(style.marginLeft) || 0;
+        const ml = parseFloat(circleEl.dataset.marginLeftPx) || 0;
         return circleEl.offsetLeft + ml + (circleEl.offsetWidth / 2);
     }
 }

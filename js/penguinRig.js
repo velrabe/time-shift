@@ -10,6 +10,7 @@ class PenguinRig {
         this.mouthOpen = false;
         this.mouthFullyClosed = true;
         this.mouthCloseSettleTimeoutId = null;
+        this.mouthFrozen = false;
     }
 
     isMouthHeld() {
@@ -29,11 +30,13 @@ class PenguinRig {
     }
 
     getPenguinParts() {
-        const root = this.focusZone?.querySelector('#penguin-root') || this.focusZone?.querySelector('.penguin');
+        const root = this.focusZone;
         if (!root) return null;
         const head = root.querySelector('#penguin-head-layer');
         const eye = root.querySelector('#penguin-eye-layer');
         const rightColliderLayer = root.querySelector('#penguin-right-collider-layer');
+        const topJawBack = root.querySelector('#penguin-top-jaw-back');
+        const botJawBack = root.querySelector('#penguin-bot-jaw-back');
         const topJaw = root.querySelector('#penguin-top-jaw');
         const botJaw = root.querySelector('#penguin-bot-jaw');
         const topJawImg = topJaw?.querySelector?.('.penguin-jaw-base') || null;
@@ -41,12 +44,20 @@ class PenguinRig {
         const leftColliderLayer = root.querySelector('#penguin-left-collider-layer');
         const rightColliderPath = rightColliderLayer?.querySelector?.('#penguin-right-collider-path') || null;
         const leftColliderPath = leftColliderLayer?.querySelector?.('#penguin-left-collider-path') || null;
-        const topColliderPath = topJaw?.querySelector?.('#penguin-top-collider-path') || null;
-        const botColliderPath = botJaw?.querySelector?.('#penguin-bot-collider-path') || null;
-        return { root, head, eye, topJaw, botJaw, topJawImg, botJawImg, leftColliderPath, rightColliderPath, topColliderPath, botColliderPath };
+        // Коллайдеры зубов 1–5: для еды — только зуб 1 (индекс 0); для льда — зубы 1–4 crack, зуб 5 (индекс 4) геймовер
+        const topToothCols = Array.from(topJaw?.querySelectorAll?.('.penguin-tooth-col') || []);
+        const botToothCols = Array.from(botJaw?.querySelectorAll?.('.penguin-tooth-col') || []);
+        const topToothColliderPaths = topToothCols.map((svg) => svg.querySelector('path')).filter(Boolean).slice(0, 5);
+        const botToothColliderPaths = botToothCols.map((svg) => svg.querySelector('path')).filter(Boolean).slice(0, 5);
+        return {
+            root, head, eye, topJawBack, botJawBack, topJaw, botJaw, topJawImg, botJawImg,
+            leftColliderPath, rightColliderPath,
+            topToothColliderPaths, botToothColliderPaths
+        };
     }
 
     applyMouthPose(open) {
+        if (this.mouthFrozen) return;
         const parts = this.getPenguinParts();
         if (!parts?.root) return;
         const setTransform = (el, value) => {
@@ -62,14 +73,18 @@ class PenguinRig {
             setTransform(parts.head, 'rotate(-10deg)');
             setTransform(parts.eye, 'rotate(-17deg)');
             setTransform(parts.topJaw, 'rotate(-17deg)');
+            setTransform(parts.topJawBack, 'rotate(-17deg)');
             setTransform(parts.botJaw, 'rotate(14deg)');
+            setTransform(parts.botJawBack, 'rotate(14deg)');
             return;
         }
 
         setTransform(parts.head, null);
         setTransform(parts.eye, null);
         setTransform(parts.topJaw, null);
+        setTransform(parts.topJawBack, null);
         setTransform(parts.botJaw, null);
+        setTransform(parts.botJawBack, null);
     }
 
     getPenguinMouthRightX(containerEl) {
@@ -86,6 +101,7 @@ class PenguinRig {
     }
 
     stopAllBites() {
+        this.mouthFrozen = false;
         const parts = this.getPenguinParts();
         if (!parts?.root) return;
         if (this.mouthCloseSettleTimeoutId) {
@@ -97,6 +113,25 @@ class PenguinRig {
         this.mouthOpen = false;
         this.mouthFullyClosed = true;
         this.applyMouthPose(false);
+    }
+
+    /** Замораживает челюсть в текущей позе (для геймовера по льду на 5-м зубе). */
+    freezeMouthInPlace() {
+        const parts = this.getPenguinParts();
+        if (!parts?.root) return;
+        this.mouthFrozen = true;
+        const freeze = (el) => {
+            if (!el) return;
+            const t = el ? window.getComputedStyle(el).transform : 'none';
+            el.style.transition = 'none';
+            el.style.transform = t || 'none';
+        };
+        freeze(parts.head);
+        freeze(parts.eye);
+        freeze(parts.topJawBack);
+        freeze(parts.topJaw);
+        freeze(parts.botJawBack);
+        freeze(parts.botJaw);
     }
 
     setPenguinGameOverState() {
@@ -112,8 +147,8 @@ class PenguinRig {
     triggerTimingTeethHitFx() {
         const parts = this.getPenguinParts();
         if (!parts?.root) return;
-        const topTeeth = Array.from(parts.topJaw?.querySelectorAll?.('.penguin-tooth') || []).slice(0, 2);
-        const botTeeth = Array.from(parts.botJaw?.querySelectorAll?.('.penguin-tooth') || []).slice(0, 2);
+        const topTeeth = Array.from(parts.topJaw?.querySelectorAll?.('.penguin-tooth') || []).slice(0, 1);
+        const botTeeth = Array.from(parts.botJaw?.querySelectorAll?.('.penguin-tooth') || []).slice(0, 1);
 
         const runFx = (teeth, configs) => {
             teeth.forEach((tooth, idx) => {
@@ -134,12 +169,10 @@ class PenguinRig {
         };
 
         runFx(topTeeth, [
-            { angleDeg: -20, dyPx: -10, dx: -4 },
-            { angleDeg: -14, dyPx: -8, dx: -8 }
+            { angleDeg: -20, dyPx: -10, dx: -4 }
         ]);
         runFx(botTeeth, [
-            { angleDeg: -7, dyPx: 8, dx: -4 },
-            { angleDeg: -20, dyPx: 10, dx: -8 }
+            { angleDeg: -7, dyPx: 8, dx: -4 }
         ]);
     }
 

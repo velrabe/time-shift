@@ -739,12 +739,17 @@ body {
     border-top: 2px solid rgba(255, 200, 0, 0.95);
 }
 
+/* Базовые стили ленты (внутри focus-zone переопределены z-index и inset) */
 #number-strip-container {
     position: absolute;
     width: 100%;
     height: 100%;
     overflow: hidden;
-    z-index: 10; /* above ice */
+    /* Еда обрезается по left-collider (маска с дыркой), чтобы не вылезала поверх головы */
+    mask: url(#strip-mask);
+    mask-size: 100% 100%;
+    -webkit-mask: url(#strip-mask);
+    -webkit-mask-size: 100% 100%;
 }
 
 #number-strip {
@@ -833,25 +838,47 @@ body {
     opacity: 1;
 }
 
-/* Focus Zone */
+/* Focus Zone: на весь game-area; внутри три слоя: jaw-back, лента, jaw-front */
 #focus-zone {
     position: absolute;
-    width: var(--penguin-w);
-    height: var(--penguin-h);
-    /* Базовая посадка: пингвин чуть "вылезает" из-за левого края экрана.
-       Это оставляет запас, чтобы при bite-сдвиге вправо форма головы
-       выглядела как появляющаяся из-за края, а не как внезапно "обрезанная". */
-    left: -80px;
-    top: 50%;
-    /* Lift penguin relative to the lane by 1/4 circle height */
-    transform: translateY(-50%) translateY(calc(var(--lane-shift-y) * -1));
-    display: flex;
-    align-items: center;
-    justify-content: flex-start;
-    z-index: 20; /* above ice + strip */
+    inset: 0;
     pointer-events: none;
     overflow: visible;
+    z-index: 20; /* above ice + background */
+}
+
+/* Задняя часть пингвина (голова, глаз, коллайдеры, задние челюсти) — ниже ленты */
+.penguin-back {
+    position: absolute;
+    left: -80px;
+    top: 50%;
+    transform: translateY(-50%) translateY(calc(var(--lane-shift-y) * -1));
+    width: var(--penguin-w);
+    height: var(--penguin-h);
     transform-origin: center center;
+    z-index: 1;
+}
+
+/* Лента с едой/льдом — между jaw-back и jaw-front */
+#focus-zone #number-strip-container {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    z-index: 2;
+}
+
+/* Передние челюсти — выше ленты */
+.penguin-front {
+    position: absolute;
+    left: -80px;
+    top: 50%;
+    transform: translateY(-50%) translateY(calc(var(--lane-shift-y) * -1));
+    width: var(--penguin-w);
+    height: var(--penguin-h);
+    transform-origin: center center;
+    z-index: 3;
 }
 
 .focus-penguin {
@@ -861,7 +888,6 @@ body {
     aspect-ratio: var(--penguin-aspect-ratio);
     transform-origin: center center;
     will-change: transform;
-    z-index: 10;
     left: -22px;
 }
 
@@ -910,6 +936,11 @@ body {
     z-index: 2;
 }
 
+.penguin-layer--top-jaw-back,
+.penguin-layer--bot-jaw-back {
+    z-index: 2;
+}
+
 .penguin-layer--top-jaw {
     z-index: 3;
 }
@@ -918,8 +949,29 @@ body {
     z-index: 4;
 }
 
+.penguin-tooth-group {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+}
+
+.penguin-tooth-group .penguin-tooth,
+.penguin-tooth-group .penguin-tooth-col {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+}
+
+.penguin-tooth-group .penguin-tooth-col {
+    opacity: 0;
+}
+
 .penguin-jaw-base {
-    z-index: 1;
+    z-index: 5;
 }
 
 .penguin-collider {
@@ -932,8 +984,12 @@ body {
     z-index: 2;
 }
 
-.penguin-tooth {
+.penguin-tooth-group .penguin-tooth {
     z-index: 3;
+}
+
+.penguin-tooth-group .penguin-tooth-col {
+    z-index: 4;
 }
 
 /* Приоритет слоёв зубов: первые два выше, пятый ниже первых двух */
@@ -958,6 +1014,8 @@ body {
 .penguin,
 .penguin #penguin-head-layer,
 .penguin #penguin-eye-layer,
+.penguin #penguin-top-jaw-back,
+.penguin #penguin-bot-jaw-back,
 .penguin #penguin-top-jaw,
 .penguin #penguin-bot-jaw {
     transition: transform 100ms linear;

@@ -805,9 +805,9 @@ class Game {
         if (this.state !== 'RUNNING') return;
         this.deathInProgress = true;
         this.state = 'DYING';
-        // Анимация перелома зубов только при реальной смерти (щит не активен).
+        const isIceTooth5 = meta?.reason === 'ICE_TOOTH5_HIT';
         const timingJawHit = meta?.reason === 'TIMING_JAW_HIT_TOP' || meta?.reason === 'TIMING_JAW_HIT_BOT';
-        if (this.audio) {
+        if (this.audio && !isIceTooth5) {
             if (timingJawHit && typeof this.audio.playJawBroke === 'function') {
                 this.audio.playJawBroke();
             } else if (!timingJawHit && typeof this.audio.playFrontCrush === 'function') {
@@ -818,9 +818,13 @@ class Game {
             this.renderer?.penguinRig?.triggerTimingTeethHitFx?.();
         }
         try {
-            this.renderer?.stopAllBites?.();
-            // Переключаем изображения пингвина на состояние проигрыша
-            this.renderer?.setPenguinGameOverState?.();
+            if (isIceTooth5) {
+                this.renderer?.freezeMouthInPlace?.();
+                this.renderer?.pauseBeltUpdate?.();
+            } else {
+                this.renderer?.stopAllBites?.();
+                this.renderer?.setPenguinGameOverState?.();
+            }
         } catch (e) {
             // ignore
         }

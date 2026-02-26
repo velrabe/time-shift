@@ -12,6 +12,7 @@ class CollisionEngine {
         this.updateDebugOverlay = options.updateDebugOverlay;
         this.dbgLog = options.dbgLog;
         this.emitEvent = options.emitEvent;
+        this.updateStripMask = options.updateStripMask;
 
         this.deathTriggered = false;
         this.swallowBoostState = new WeakMap();
@@ -167,9 +168,22 @@ class CollisionEngine {
         const mouthFullyClosed = !!this.isMouthFullyClosed?.();
         const leftColliderPoly = this.getPathPolyOnScreen(parts.leftColliderPath, 24);
         const rightColliderPoly = this.getPathPolyOnScreen(parts.rightColliderPath, 24);
-        const topColliderPoly = this.getPathPolyOnScreen(parts.topColliderPath, 24);
-        const botColliderPoly = this.getPathPolyOnScreen(parts.botColliderPath, 24);
-        const leftColliderRightX = this.getPolyRightBoundX(leftColliderPoly, containerRect.left);
+        if (this.updateStripMask && leftColliderPoly && leftColliderPoly.length >= 3) {
+            const w = containerRect.width || 1;
+            const h = containerRect.height || 1;
+            const left = containerRect.left;
+            const top = containerRect.top;
+            const norm = leftColliderPoly.map((p) => {
+                const x = Math.max(0, Math.min(1, (p.x - left) / w));
+                const y = Math.max(0, Math.min(1, (p.y - top) / h));
+                return `${x},${y}`;
+            });
+            const pathD = `M${norm.join(' L')} Z`;
+            this.updateStripMask(pathD);
+        }
+        // Полигоны всех 5 зубов: еда — только зуб 1 (индекс 0); лёд — зубы 1–4 crack, зуб 5 (индекс 4) геймовер
+        const topToothPolys = (parts.topToothColliderPaths || []).map((p) => this.getPathPolyOnScreen(p, 24)).filter(Boolean);
+        const botToothPolys = (parts.botToothColliderPaths || []).map((p) => this.getPathPolyOnScreen(p, 24)).filter(Boolean);
         const nowMs = this.getNowMs();
 
         const circles = Array.from(numberStrip.querySelectorAll('.number-circle:not(.passed)'));
@@ -202,6 +216,7 @@ class CollisionEngine {
             if (circle.dataset.processed === 'true') continue;
             const itemType = circle.dataset?.itemType || 'food';
             const isCoin = itemType === 'coin';
+            const isIce = itemType === 'ice';
             const boostState = this.getSwallowBoostState(circle, nowMs);
 
             const circleRect = circle.getBoundingClientRect();
@@ -222,11 +237,6 @@ class CollisionEngine {
 
             const foodRectPage = imgRect || circleRect;
             const overlapsMouthVert = (imgBottom >= jawTop) && (imgTop <= jawBottom);
-            const swallowDepthPx = Math.max(14, Math.round((jawBottom - jawTop) * 0.22));
-            const stomachThresholdX = jawRight - swallowDepthPx;
-            const fullyPastJawLine = overlapsMouthVert && (imgCenterX <= stomachThresholdX);
-            const hasExitedLeftCollider = leftColliderRightX != null && overlapsMouthVert && (imgRight <= leftColliderRightX);
-            const swallowTrigger = hasExitedLeftCollider || (leftColliderRightX == null && fullyPastJawLine);
 
             const colliderPath = circle.querySelector('.food-collider path');
             let foodPoly = (colliderPath && this.getPathPolyOnScreen(colliderPath, 24)) || null;
@@ -238,40 +248,51 @@ class CollisionEngine {
                     { x: foodRectPage.left, y: foodRectPage.bottom }
                 ];
             }
-            const topCollision = this.polygonsOverlapSAT(foodPoly, topColliderPoly);
-            const botCollision = this.polygonsOverlapSAT(foodPoly, botColliderPoly);
-            const teethCollision = topCollision || botCollision;
+            // Объект начинает исчезать (проглатывание) только при касании left-collider (не лёд)
+            const foodTouchesLeftCollider = leftColliderPoly && this.polygonsOverlapSAT(foodPoly, leftColliderPoly);
+            const swallowTrigger = mouthOpen && foodTouchesLeftCollider;
+            // Еда/монета: коллизия только с 1-м зубом (индекс 0)
+            const topTooth1 = topToothPolys[0];
+            const botTooth1 = botToothPolys[0];
+            const topCollision1 = topTooth1 && this.polygonsOverlapSAT(foodPoly, topTooth1);
+            const botCollision1 = botTooth1 && this.polygonsOverlapSAT(foodPoly, botTooth1);
+            const teethCollision1 = topCollision1 || botCollision1;
+            // Лёд: зуб 5 (индекс 4) = геймовер; зубы 1–4 (индексы 0–3) = расщелкивание
+            const topTooth5 = topToothPolys[4];
+            const botTooth5 = botToothPolys[4];
+            const iceHitTooth5 = (topTooth5 && this.polygonsOverlapSAT(foodPoly, topTooth5)) || (botTooth5 && this.polygonsOverlapSAT(foodPoly, botTooth5));
+            let iceCrack = false;
+            if (isIce && !mouthOpen && !mouthFullyClosed) {
+                for (let i = 0; i <= 3 && i < topToothPolys.length; i++) {
+                    if (topToothPolys[i] && this.polygonsOverlapSAT(foodPoly, topToothPolys[i])) { iceCrack = true; break; }
+                }
+                if (!iceCrack) {
+                    for (let i = 0; i <= 3 && i < botToothPolys.length; i++) {
+                        if (botToothPolys[i] && this.polygonsOverlapSAT(foodPoly, botToothPolys[i])) { iceCrack = true; break; }
+                    }
+                }
+            }
+
             const rightColliderHit = this.polygonsOverlapSAT(foodPoly, rightColliderPoly);
-            // В полностью закрытом состоянии приоритет у right-collider:
-            // даже если геометрически есть пересечение с зубным collider, это уже "closed mouth left hit".
             const closedMouthLeftHit = mouthFullyClosed && overlapsMouthVert && rightColliderHit;
-            // "Невовремя захлопнулась" = рот уже не открыт, но ещё не полностью закрылся.
-            const timingJawHit = (!mouthOpen) && (!mouthFullyClosed) && teethCollision;
+            const timingJawHit = (!mouthOpen) && (!mouthFullyClosed) && teethCollision1;
             const foodDeathCollision = timingJawHit || closedMouthLeftHit;
 
-            // Фаза 1: как только объект начинает пересекать right-collider, добавляем
-            // локальное смещение влево с той же скоростью ленты (итого ≈ x2).
-            if (!isCoin && mouthOpen && rightColliderHit && !boostState.active && !boostState.entered) {
-                const sampled = Number.isFinite(observedSpeedPxMs) ? observedSpeedPxMs : 0;
-                const base = sampled || 0.07;
-                const clamped = Math.max(0.03, Math.min(0.9, base * 2));
-                boostState.active = true;
-                boostState.entered = true;
-                boostState.targetSpeedPxMs = clamped;
-                boostState.boostStartMs = nowMs;
-                boostState.lastTickMs = nowMs;
-                circle.dataset.swallowBoost = 'true';
-            }
-            if (!isCoin && mouthOpen) this.applySwallowBoostTick(circle, boostState, nowMs);
+            // Лёд: геймовер только при контакте с 5-м зубом
+            const iceDeathCollision = isIce && !mouthOpen && !mouthFullyClosed && iceHitTooth5;
+
+            // Ускорение при входе в right-collider отключено: объект движется только со скоростью ленты.
 
             // Монета:
             // - Коины начисляются только при реальном укусе: обе челюсти захватили монетку и рот ещё не полностью закрыт (момент сжатия).
             // - Если рот уже полностью закрыт и монетка касается рта/зубов — это опасный контакт (смерть или поглощение щитом), коины не даём, монетка просто исчезает.
             // - Проглоченная монетка (прошла вглубь при открытом рте) даёт обычные очки, как еда.
+            const topCollision = topTooth1 && this.polygonsOverlapSAT(foodPoly, topTooth1);
+            const botCollision = botTooth1 && this.polygonsOverlapSAT(foodPoly, botTooth1);
             const coinBothJaws = topCollision && botCollision;
             const coinBiteCollision = coinBothJaws && !mouthFullyClosed;
-            const coinDeathCollision = mouthFullyClosed && (rightColliderHit || teethCollision);
-            const isDeathCollision = isCoin ? coinDeathCollision : foodDeathCollision;
+            const coinDeathCollision = mouthFullyClosed && (rightColliderHit || (topTooth1 && this.polygonsOverlapSAT(foodPoly, topTooth1)) || (botTooth1 && this.polygonsOverlapSAT(foodPoly, botTooth1)));
+            const isDeathCollision = isIce ? iceDeathCollision : (isCoin ? coinDeathCollision : foodDeathCollision);
 
             if (this.isDebug?.()) {
                 if (isDeathCollision) circle.classList.add('game-over-trigger');
@@ -282,9 +303,9 @@ class CollisionEngine {
                 this.clearSwallowBoost(circle, boostState);
                 collidingCircle = circle;
                 const value = parseInt(circle.dataset.value, 10) || 0;
-                const reason = timingJawHit
-                    ? (topCollision ? 'TIMING_JAW_HIT_TOP' : 'TIMING_JAW_HIT_BOT')
-                    : 'CLOSED_MOUTH_LEFT_HIT';
+                const reason = iceDeathCollision
+                    ? 'ICE_TOOTH5_HIT'
+                    : (timingJawHit ? (topCollision ? 'TIMING_JAW_HIT_TOP' : 'TIMING_JAW_HIT_BOT') : 'CLOSED_MOUTH_LEFT_HIT');
 
                 if (this.isDebug?.()) {
                     const dangerRect = foodRectPage;
@@ -294,8 +315,8 @@ class CollisionEngine {
                         containerRect,
                         jawTopRect,
                         jawBotRect,
-                        teethTopPoly: topColliderPoly,
-                        teethBotPoly: botColliderPoly,
+                        teethTopPoly: topToothPolys[0] ?? null,
+                        teethBotPoly: botToothPolys[0] ?? null,
                         rightColliderPoly,
                         dangerRect,
                         dangerPoly,
@@ -314,10 +335,21 @@ class CollisionEngine {
                     this.emitEvent?.('PENGUIN_COLLISION', {
                         reason,
                         value,
-                        circle
+                        circle,
+                        freezeMouth: iceDeathCollision
                     });
                 }
                 circle.dataset.processed = 'true';
+                return;
+            }
+
+            // Лёд: расщелкивание при контакте с зубами 1–4 (после проверки геймовера по 5-му зубу)
+            if (iceCrack) {
+                circle.dataset.processed = 'true';
+                circle.classList.add('passed', 'consumed');
+                const imgEl = circle.querySelector('img.food-img');
+                if (imgEl) imgEl.style.opacity = '0';
+                this.emitEvent?.('ICE_CRACKED', { circle });
                 return;
             }
 
@@ -335,7 +367,8 @@ class CollisionEngine {
                 return;
             }
 
-            if (swallowTrigger && mouthOpen) {
+            // Лёд не исчезает при проходе вглубь — только при расщелкивании (зубы 1–4) или геймовере (зуб 5)
+            if (swallowTrigger && !isIce) {
                 // Фаза 2: объект покинул left-collider -> безопасен и запускаем анимацию проглатывания.
                 boostState.active = false;
                 circle.dataset.swallowBoost = 'false';
@@ -402,8 +435,8 @@ class CollisionEngine {
                 containerRect,
                 jawTopRect,
                 jawBotRect,
-                teethTopPoly: topColliderPoly,
-                teethBotPoly: botColliderPoly,
+                teethTopPoly: topToothPolys[0] ?? null,
+                teethBotPoly: botToothPolys[0] ?? null,
                 rightColliderPoly,
                 dangerRect: trackedDangerRect,
                 dangerPoly: trackedDangerPoly,

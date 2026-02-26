@@ -52,6 +52,7 @@ class Renderer {
                 this.updateDebugObjectBoxes(trackedCircle, containerRect, isColliding),
             updateDebugOverlay: (payload) => this.updateDebugOverlay(payload),
             dbgLog: (key, payload, minIntervalMs) => this.dbgLog(key, payload, minIntervalMs),
+            updateStripMask: (pathD) => this.updateStripMask(pathD),
             emitEvent: (eventName, payload) => {
                 if (typeof eventBus !== 'undefined' && eventBus?.emit) {
                     eventBus.emit(eventName, payload);
@@ -206,7 +207,8 @@ class Renderer {
             const finalDx = finalCx - startCx;
             const finalDy = finalCy - startCy;
 
-            fx.style.transform = `translate(${finalDx.toFixed(2)}px, ${finalDy.toFixed(2)}px) scale(0.42)`;
+            // Убираем уменьшение объекта при «погружении» в рот: оставляем масштаб 1
+            fx.style.transform = `translate(${finalDx.toFixed(2)}px, ${finalDy.toFixed(2)}px) scale(1)`;
             fx.style.opacity = '0';
             fx.style.filter = 'blur(0.6px)';
         });
@@ -261,11 +263,13 @@ class Renderer {
 
     getFoodSrc(base) {
         if (!base) return '';
+        if (base === 'ice') return 'img/food/ice.svg';
         return `img/food/${base}-s.svg`;
     }
 
     getFoodSrcCandidates(base) {
         if (!base) return [];
+        if (base === 'ice') return ['img/food/ice.svg'];
         return [
             `img/food/${base}-s.svg`,
             `img/food/${base}-s.png`,
@@ -359,6 +363,7 @@ class Renderer {
 
     getItemSrc(itemType, base) {
         if (itemType === 'coin') return 'img/ui/coin.svg';
+        if (itemType === 'ice') return 'img/food/ice.svg';
         return this.getFoodSrc(base);
     }
 
@@ -418,11 +423,11 @@ class Renderer {
         const value = parseInt(circleEl.dataset.value, 10);
         const rushActive = !!window.gameInstance?.isCoinRushActive?.();
         const storedType = circleEl?.dataset?.itemType;
-        const hasStoredType = storedType === 'food' || storedType === 'coin';
+        const hasStoredType = storedType === 'food' || storedType === 'coin' || storedType === 'ice';
         const itemType = rushActive
             ? 'coin'
             : (hasStoredType ? storedType : this.getItemTypeForValue(value));
-        const base = circleEl.dataset.foodBase || this.getRandomFoodBase() || this.getFoodBaseForValue(value) || 'f1';
+        const base = circleEl.dataset.foodBase || (itemType === 'ice' ? 'ice' : this.getRandomFoodBase() || this.getFoodBaseForValue(value) || 'f1');
 
         circleEl.dataset.foodBase = base;
         circleEl.dataset.itemType = itemType;
@@ -431,6 +436,11 @@ class Renderer {
             const candidates = this.getFoodSrcCandidates(base);
             this.setImageSrcIfChanged(img, candidates[0] || this.getFallbackFoodSvg(base));
             this.ensureFoodCollider(circleEl, base);
+            this.setFoodPlaceholderSize(circleEl, img);
+        } else if (itemType === 'ice') {
+            circleEl.dataset.foodBase = 'ice';
+            this.setImageSrcIfChanged(img, this.getItemSrc('ice', 'ice'));
+            this.ensureFoodCollider(circleEl, 'ice');
             this.setFoodPlaceholderSize(circleEl, img);
         } else {
             // При Coin Rush круги становятся монетами не только визуально:
@@ -896,6 +906,17 @@ class Renderer {
     // Пауза обновления ленты (сохраняем текущее время, чтобы не "догонять" при возобновлении)
     pauseBeltUpdate() {
         this.stripConveyor.pause();
+    }
+
+    /** Заморозка челюсти в текущей позе (геймовер по льду на 5-м зубе). */
+    freezeMouthInPlace() {
+        this.penguinRig?.freezeMouthInPlace?.();
+    }
+
+    /** Обновляет маску ленты: дырка по left-collider, чтобы еда обрезалась при входе в рот. */
+    updateStripMask(pathD) {
+        const hole = document.getElementById('strip-mask-hole');
+        if (hole && pathD) hole.setAttribute('d', pathD);
     }
     
     // Возобновление обновления ленты (корректируем время на длительность паузы)

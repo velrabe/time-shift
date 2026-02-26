@@ -254,8 +254,11 @@ class StripConveyorSystem {
                 this.foodsSinceLastCoin = 0;
             } else if (item.type === 'any') {
                 itemType = this.rollItemTypeForSpawn();
+            } else if (item.type === 'food') {
+                // Иногда вместо еды спавним лёд (расщелкивается зубами 1–4, зуб 5 = геймовер)
+                itemType = (Math.random() < 0.15) ? 'ice' : 'food';
+                this.foodsSinceLastCoin = Math.max(0, Math.floor(this.foodsSinceLastCoin || 0)) + 1;
             } else {
-                // Важно: item.type === 'food' должен гарантировать food (без рандомной подмены на coin).
                 itemType = 'food';
                 this.foodsSinceLastCoin = Math.max(0, Math.floor(this.foodsSinceLastCoin || 0)) + 1;
             }
@@ -336,7 +339,7 @@ class StripConveyorSystem {
             if (!hasCoin) {
                 const foodIndices = [];
                 for (let i = 0; i < events.length; i++) {
-                    if (events[i].itemType !== 'coin') foodIndices.push(i);
+                    if (events[i].itemType === 'food') foodIndices.push(i);
                 }
                 if (foodIndices.length > 0) {
                     const pick = foodIndices[Math.floor(Math.random() * foodIndices.length)];
@@ -400,8 +403,12 @@ class StripConveyorSystem {
             this.ensureStripWindowInitialized(0);
             this.recomputeStripMetrics();
             this.adjustInitialBeltPosition();
-            // Избегаем стартовой "паузы" на первом кадре.
             this.lastBeltUpdateTime = nowMs - 16;
+        }
+
+        if (this.beltPauseStartTime != null) {
+            this.lastBeltUpdateTime = nowMs;
+            return;
         }
 
         const deltaTime = nowMs - this.lastBeltUpdateTime;

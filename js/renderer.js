@@ -3,6 +3,12 @@ class Renderer {
     constructor() {
         this.numberStrip = document.getElementById('number-strip');
         this.focusZone = document.getElementById('focus-zone');
+        this.mobilePerfMode = this.detectMobilePerfMode();
+        if (this.mobilePerfMode) {
+            document.documentElement.classList.add('mobile-perf');
+        } else {
+            document.documentElement.classList.remove('mobile-perf');
+        }
         
         // Состояние анимаций (разделены для независимой работы)
         this.circleAnimationId = null; // ID анимации круга
@@ -20,6 +26,8 @@ class Renderer {
         this.debugEls = null;
         // фиксируем "статический" якорь рта, чтобы лента не следовала за transform-анимацией укуса
         this._cachedMouthRightX = 0;
+        this._floatingBonusPool = [];
+        this._eatFxPool = [];
         
         this._mouthHoldMaxMs = 2000;
         
@@ -29,9 +37,15 @@ class Renderer {
         this._foodColliderCache = {};
         // In-flight fetch cache: убирает дубликаты тяжелых запросов к одним и тем же SVG.
         this._foodColliderPromiseCache = {};
+        // Кэш реальных размеров ассетов (naturalWidth/Height), чтобы не было скачков размера при загрузке.
+        this._foodAssetSizeCache = Object.create(null);
+        // Стабильная (не зависящая от transform-анимации укуса) высота "головы" для масштаба еды.
+        this._cachedHeadHeightPx = null;
+        this._relayoutRafId = 0;
 
         this.stripConveyor = new StripConveyorSystem({
             numberStrip: this.numberStrip,
+            perfMode: this.mobilePerfMode,
             getGameArea: () => document.getElementById('game-area'),
             getFocusAnchorX: (container) => this.getFocusAnchorX(container),
             ensureFoodCircle: (circleEl) => this.ensureFoodCircle(circleEl),
@@ -39,6 +53,7 @@ class Renderer {
             checkCollisionsAndAutoBite: (container) => this.checkCollisionsAndAutoBite(container)
         });
         this.collisionEngine = new CollisionEngine({
+            perfMode: this.mobilePerfMode,
             getNumberStrip: () => this.numberStrip,
             getPenguinParts: () => this.penguinRig.getPenguinParts(),
             isMouthOpen: () => this.penguinRig.isMouthOpen(),
@@ -67,6 +82,7 @@ class Renderer {
         });
         this.ui = new RendererUI();
         this.cloudsBackground = new CloudsBackground({
+            perfMode: this.mobilePerfMode,
             getContainer: () => document.getElementById('clouds-container')
         });
         // Совместимость с существующим кодом Game, который читает эти поля напрямую.
@@ -81,6 +97,7 @@ class Renderer {
         // чтобы замена head SVG не ломала масштаб/позиции конструкции.
         this.setupDebugOverlay();
         this.setupClouds();
+        this.preloadFoodAssets();
 
         // Ограниченные debug-логи (без спама каждый кадр)
         this._dbg = {
@@ -129,6 +146,25 @@ class Renderer {
         console.log(`[DBG:${key}]`, payload);
     }
 
+    detectMobilePerfMode() {
+        try {
+            const qs = new URLSearchParams(window.location.search || '');
+            const forced = qs.get('perf');
+            if (forced === '0' || forced === 'off' || forced === 'false') return false;
+            if (forced === '1' || forced === 'on' || forced === 'true') return true;
+        } catch (e) {
+            // ignore
+        }
+
+        const coarse = typeof window.matchMedia === 'function'
+            && window.matchMedia('(hover: none) and (pointer: coarse)').matches;
+        const smallViewport = Math.min(window.innerWidth || 0, window.innerHeight || 0) <= 480;
+        const lowCpu = Number.isFinite(navigator.hardwareConcurrency) && navigator.hardwareConcurrency <= 6;
+        const lowMem = Number.isFinite(navigator.deviceMemory) && navigator.deviceMemory <= 6;
+        const saveData = !!navigator?.connection?.saveData;
+        return !!(coarse || smallViewport || lowCpu || lowMem || saveData);
+    }
+
     // Анимация "успешного поедания": предмет плавно улетает в рот и растворяется
     animateEatIntoMouth(circleEl, containerEl, containerRect, targetX, targetY) {
         if (!circleEl || !containerEl || !containerRect) return;
@@ -161,7 +197,9 @@ class Renderer {
         const localStartLeft = startLeft - rootLeft;
         const localStartTop = startTop - rootTop;
 
-        const fx = document.createElement('img');
+        const fx = this.acquireEatFxEl();
+        const fxToken = (fx._poolToken || 0) + 1;
+        fx._poolToken = fxToken;
         fx.src = imgEl.currentSrc || imgEl.src;
         fx.alt = '';
         fx.draggable = false;
@@ -214,8 +252,32 @@ class Renderer {
         });
 
         window.setTimeout(() => {
-            try { fx.remove(); } catch (e) { /* ignore */ }
+            if (fx._poolToken !== fxToken) return;
+            this.releaseEatFxEl(fx);
         }, 320);
+    }
+
+    acquireEatFxEl() {
+        const fx = this._eatFxPool.pop() || document.createElement('img');
+        fx.className = '';
+        fx.style.position = 'absolute';
+        fx.style.pointerEvents = 'none';
+        fx.style.zIndex = '2';
+        fx.style.willChange = 'transform, opacity, filter';
+        fx.style.transformOrigin = '50% 50%';
+        fx.style.transition = 'transform 260ms cubic-bezier(0.2, 0.75, 0.3, 0.95), opacity 260ms ease-in, filter 260ms ease-in';
+        return fx;
+    }
+
+    releaseEatFxEl(fx) {
+        if (!fx) return;
+        try { fx.remove(); } catch (e) { /* ignore */ }
+        fx.style.transform = 'translate(0px, 0px) scale(1)';
+        fx.style.opacity = '1';
+        fx.style.filter = 'none';
+        if (this._eatFxPool.length < 24) {
+            this._eatFxPool.push(fx);
+        }
     }
 
     // В debug-режиме показываем числа прямо на кружках, чтобы легче отлаживать "ленту"
@@ -320,7 +382,12 @@ class Renderer {
     /** Добавляет в круг коллайдер-SVG по маске из img/food/{base}-s.svg (асинхронно). */
     ensureFoodCollider(circleEl, base) {
         if (!circleEl || !base) return;
-        if (circleEl.querySelector('.food-collider')) return;
+        if (circleEl._foodColliderPath?.isConnected) return;
+        const existingPath = circleEl.querySelector('.food-collider path');
+        if (existingPath) {
+            circleEl._foodColliderPath = existingPath;
+            return;
+        }
         this.fetchFoodColliderData(base).then((data) => {
             if (!data.pathD || !circleEl.isConnected) return;
             const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -341,6 +408,7 @@ class Renderer {
             path.setAttribute('fill', 'none');
             svg.appendChild(path);
             circleEl.appendChild(svg);
+            circleEl._foodColliderPath = path;
         });
     }
 
@@ -358,10 +426,57 @@ class Renderer {
         return this.getFoodSrc(base);
     }
 
+    preloadFoodAssets() {
+        const sources = [];
+        const bases = Array.isArray(this.foodBases) ? this.foodBases : [];
+        for (let i = 0; i < bases.length; i++) {
+            const base = bases[i];
+            const src = this.getFoodSrc(base);
+            if (src) sources.push(src);
+        }
+        sources.push(this.getItemSrc('coin', 'coin'));
+        sources.push(this.getItemSrc('ice', 'ice'));
+
+        for (let i = 0; i < sources.length; i++) {
+            this.preloadFoodAsset(sources[i]);
+        }
+    }
+
+    preloadFoodAsset(src) {
+        if (!src || this._foodAssetSizeCache[src]) return;
+        const img = new Image();
+        img.decoding = 'async';
+        const onReady = () => {
+            this.cacheFoodAssetSizeFromImage(src, img);
+        };
+        img.addEventListener('load', onReady, { once: true });
+        img.src = src;
+        if (img.complete) onReady();
+    }
+
+    cacheFoodAssetSizeFromImage(src, img) {
+        if (!src || !img) return;
+        const w = Number(img.naturalWidth);
+        const h = Number(img.naturalHeight);
+        if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return;
+        this._foodAssetSizeCache[src] = { width: w, height: h };
+    }
+
+    getCachedFoodAspectRatio(src) {
+        if (!src) return null;
+        const cached = this._foodAssetSizeCache[src];
+        if (!cached) return null;
+        const w = Number(cached.width);
+        const h = Number(cached.height);
+        if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return null;
+        return w / h;
+    }
+
     setImageSrcIfChanged(img, src) {
         if (!img || !src) return;
         const current = img.getAttribute('src') || '';
         if (current === src) return;
+        this.preloadFoodAsset(src);
         img.src = src;
     }
 
@@ -377,12 +492,21 @@ class Renderer {
 
     /** Текущая высота головы пингвина в пикселях (rig-слой головы внутри focus-zone). */
     getPenguinHeadHeight() {
+        if (Number.isFinite(this._cachedHeadHeightPx) && this._cachedHeadHeightPx > 0) {
+            return this._cachedHeadHeightPx;
+        }
         try {
             const parts = this.getPenguinParts?.();
             const headLayer = parts?.head || null;
+            const layoutHeight = Number(headLayer?.offsetHeight || headLayer?.clientHeight || 0);
+            if (Number.isFinite(layoutHeight) && layoutHeight > 0) {
+                this._cachedHeadHeightPx = layoutHeight;
+                return layoutHeight;
+            }
             const rect = headLayer?.getBoundingClientRect?.();
-            const h = rect?.height;
+            const h = Number(rect?.height || 0);
             if (!Number.isFinite(h) || h <= 0) return null;
+            this._cachedHeadHeightPx = h;
             return h;
         } catch (e) {
             return null;
@@ -391,10 +515,12 @@ class Renderer {
 
     ensureFoodCircle(circleEl) {
         if (!circleEl) return;
-        if (circleEl.dataset?.swallowBoost !== 'true') {
-            circleEl.style.removeProperty('transform');
+        circleEl.style.removeProperty('transform');
+        let img = circleEl._foodImgEl;
+        if (!img || !img.isConnected) {
+            img = circleEl.querySelector('img.food-img');
+            if (img) circleEl._foodImgEl = img;
         }
-        let img = circleEl.querySelector('img.food-img');
         if (!img) {
             img = document.createElement('img');
             img.className = 'food-img';
@@ -430,6 +556,7 @@ class Renderer {
                 }
             });
             circleEl.appendChild(img);
+            circleEl._foodImgEl = img;
         }
 
         const value = parseInt(circleEl.dataset.value, 10);
@@ -459,6 +586,7 @@ class Renderer {
             // и добавляем коллайдер монеты при необходимости.
             const oldCollider = circleEl.querySelector('.food-collider');
             if (oldCollider) oldCollider.remove();
+            circleEl._foodColliderPath = null;
             this.setImageSrcIfChanged(img, this.getItemSrc(itemType, base));
             if (itemType === 'coin') {
                 this.ensureFoodCollider(circleEl, 'coin');
@@ -476,6 +604,8 @@ class Renderer {
         if (!circleEl || !img) return;
         const headHeight = this.getPenguinHeadHeight() || 0;
         const sizeScale = this.getSizeScaleForCircle(circleEl);
+        const src = img.currentSrc || img.getAttribute('src') || '';
+        const ratio = this.getCachedFoodAspectRatio(src) || 1;
 
         let placeholderH;
         let placeholderW;
@@ -483,13 +613,12 @@ class Renderer {
         if (headHeight > 0) {
             // Основной путь: высота слота пропорциональна высоте головы пингвина.
             placeholderH = headHeight * sizeScale;
-            // До загрузки точное соотношение сторон неизвестно, берём квадратный слот.
-            placeholderW = placeholderH;
+            placeholderW = placeholderH * ratio;
         } else {
             // Fallback: старый режим через circle-size, если почему-то недоступна голова.
             const baseUnit = parseFloat(getComputedStyle(circleEl).getPropertyValue('--circle-size')) || 63;
             placeholderH = baseUnit * 1.6 * sizeScale;
-            placeholderW = placeholderH;
+            placeholderW = placeholderH * ratio;
         }
 
         // Слот по ширине/высоте объекта (контейнер совпадает по кадру с пингвином).
@@ -497,6 +626,7 @@ class Renderer {
         circleEl.style.height = `${placeholderH}px`;
         img.style.width = `${placeholderW}px`;
         img.style.height = `${placeholderH}px`;
+        this.stripConveyor?.markMetricsDirty?.();
     }
 
     // Обновление размера под реальные пропорции ассета (в "оригинальных" размерах, с единым масштабом)
@@ -506,6 +636,10 @@ class Renderer {
         const naturalWidth = img.naturalWidth;
         const naturalHeight = img.naturalHeight;
         if (naturalWidth === 0 || naturalHeight === 0) return;
+        const resolvedSrc = img.currentSrc || img.getAttribute('src') || '';
+        if (resolvedSrc) {
+            this._foodAssetSizeCache[resolvedSrc] = { width: naturalWidth, height: naturalHeight };
+        }
 
         const sizeScale = this.getSizeScaleForCircle(circleEl);
         const headHeight = this.getPenguinHeadHeight();
@@ -532,6 +666,7 @@ class Renderer {
         // Контейнер ленты по кадру совпадает с объектом.
         circleEl.style.width = `${targetWidth}px`;
         circleEl.style.height = `${targetHeight}px`;
+        this.stripConveyor?.markMetricsDirty?.();
 
         // Реальные размеры для физики/дебага
         circleEl.dataset.actualWidth = String(targetWidth);
@@ -831,6 +966,11 @@ class Renderer {
     setupFocusZone() {
         // Вычисляем центр экрана
         const container = document.getElementById('game-area');
+        this._cachedHeadHeightPx = null;
+        const stableHeadHeight = this.getPenguinHeadHeight();
+        if (Number.isFinite(stableHeadHeight) && stableHeadHeight > 0) {
+            this._cachedHeadHeightPx = stableHeadHeight;
+        }
         // Кэшируем позицию рта в "спокойном" состоянии.
         // Даже если пингвин визуально двигается при укусе, лента должна ориентироваться на этот якорь.
         this._cachedMouthRightX = container ? this.penguinRig.getPenguinMouthRightX(container) : 0;
@@ -857,7 +997,7 @@ class Renderer {
             if (!headRect) return;
 
             const top = headRect.top - focusRect.top;
-            const height = headRect.height;
+            const height = this.getPenguinHeadHeight() || headRect.height;
 
             stripContainer.style.top = `${top}px`;
             stripContainer.style.bottom = 'auto';
@@ -894,10 +1034,28 @@ class Renderer {
     }
 
     setupEventListeners() {
-        // Обновление при изменении размера окна
-        window.addEventListener('resize', () => {
+        const relayout = () => {
+            this._relayoutRafId = 0;
             this.setupFocusZone();
-        });
+            this.stripConveyor?.refreshVisibleCircleSizing?.();
+            this.setupClouds();
+        };
+        const scheduleRelayout = () => {
+            if (this._relayoutRafId) return;
+            const delay = this.mobilePerfMode ? 120 : 0;
+            if (delay > 0) {
+                this._relayoutRafId = window.setTimeout(relayout, delay);
+                return;
+            }
+            this._relayoutRafId = requestAnimationFrame(relayout);
+        };
+
+        // Обновление при изменении viewport (resize + mobile browser bars + orientation).
+        window.addEventListener('resize', scheduleRelayout);
+        window.addEventListener('orientationchange', scheduleRelayout);
+        if (window.visualViewport) {
+            window.visualViewport.addEventListener('resize', scheduleRelayout);
+        }
 
         // Ускоряем ленту за каждую съеденную еду
         eventBus.on('FOOD_EATEN', () => {
@@ -944,10 +1102,10 @@ class Renderer {
         if (!container) return;
         const num = Math.max(1, Math.min(99, Math.floor(amount || 1)));
         const text = `+${num}`;
-        const el = document.createElement('div');
-        el.className = 'floating-coin-bonus';
+        const el = this.acquireFloatingBonusEl();
+        const token = (el._poolToken || 0) + 1;
+        el._poolToken = token;
         el.textContent = text;
-        el.setAttribute('aria-hidden', 'true');
         if (typeof x === 'number' && typeof y === 'number') {
             el.style.left = `${x}px`;
             el.style.top = `${y}px`;
@@ -956,10 +1114,34 @@ class Renderer {
             el.style.left = `${rect.width / 2}px`;
             el.style.top = `${rect.height / 2}px`;
         }
+        // Перезапускаем CSS-анимацию для реюза элемента.
+        el.style.animation = 'none';
+        void el.offsetWidth;
+        el.style.animation = '';
         container.appendChild(el);
         window.setTimeout(() => {
-            try { el.remove(); } catch (e) { /* ignore */ }
+            if (el._poolToken !== token) return;
+            this.releaseFloatingBonusEl(el);
         }, 850);
+    }
+
+    acquireFloatingBonusEl() {
+        const el = this._floatingBonusPool.pop() || document.createElement('div');
+        el.className = 'floating-coin-bonus';
+        el.setAttribute('aria-hidden', 'true');
+        return el;
+    }
+
+    releaseFloatingBonusEl(el) {
+        if (!el) return;
+        try { el.remove(); } catch (e) { /* ignore */ }
+        el.textContent = '';
+        el.style.left = '0px';
+        el.style.top = '0px';
+        el.style.animation = '';
+        if (this._floatingBonusPool.length < 32) {
+            this._floatingBonusPool.push(el);
+        }
     }
 
     // ========== АНИМАЦИЯ КРУГА (независимая) ==========
@@ -1080,4 +1262,3 @@ class Renderer {
         this.cloudsBackground.setupClouds();
     }
 }
-

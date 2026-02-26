@@ -34,6 +34,8 @@ class Game {
         
         this.animationFrameId = null;
         this.lastUpdateTime = 0;
+        this.uiRenderIntervalMs = 100;
+        this.lastUiRenderAt = 0;
 
         // Отложенная смерть (для анимации столкновения)
         this.deathInProgress = false;
@@ -242,6 +244,31 @@ class Game {
             this.persistProgressionSoon();
             this.updateUI();
         });
+
+        // Mobile UX guard:
+        // long-press on controls/game area should not open browser context menu/callout.
+        // Keep rename input/menu interactions intact.
+        const gameContainer = document.getElementById('game-container');
+        const isTouchDevice = (typeof window !== 'undefined')
+            && (('ontouchstart' in window) || (navigator.maxTouchPoints > 0));
+        const allowNativeMenuTarget = (target) => {
+            const el = (target instanceof Element)
+                ? target
+                : (target && target.parentElement ? target.parentElement : null);
+            if (!el) return false;
+            if (el.closest('#rename-modal')) return true;
+            if (el.closest('#leaderboard-modal')) return true;
+            return !!el.closest('input, textarea, [contenteditable="true"], [contenteditable=""]');
+        };
+        const suppressNativeUi = (e) => {
+            if (allowNativeMenuTarget(e.target)) return;
+            e.preventDefault();
+        };
+        if (isTouchDevice && gameContainer) {
+            gameContainer.addEventListener('contextmenu', suppressNativeUi, { capture: true });
+            gameContainer.addEventListener('dragstart', suppressNativeUi, { capture: true });
+            gameContainer.addEventListener('selectstart', suppressNativeUi, { capture: true });
+        }
 
         // Горячие клавиши
         document.addEventListener('keydown', (e) => {
@@ -486,8 +513,18 @@ class Game {
             biteBtn.addEventListener('pointerup', endHold);
             biteBtn.addEventListener('pointercancel', endHold);
             biteBtn.addEventListener('lostpointercapture', endHold);
+            // Safari/iOS long-press safety (some builds still trigger native menu without explicit handlers)
+            biteBtn.addEventListener('touchstart', startHold, { passive: false });
+            biteBtn.addEventListener('touchend', endHold, { passive: false });
+            biteBtn.addEventListener('touchcancel', endHold, { passive: false });
+            biteBtn.addEventListener('contextmenu', (e) => e.preventDefault());
             window.addEventListener('blur', endHold);
         }
+
+        // Prevent long-press context menu on action controls in mobile gameplay.
+        document.querySelectorAll('#controls button').forEach((btn) => {
+            btn.addEventListener('contextmenu', (e) => e.preventDefault());
+        });
 
         // Открытие таблицы лидеров по клику на BEST
         const bestHint = document.getElementById('best-hint');
@@ -690,39 +727,44 @@ class Game {
             this.persistProgressionSoon();
             this.audio.reset();
 
-        // ВАЖНО: при новой игре пересоздаем DOM-окно ленты,
-        // иначе там остаются значения из прошлой сессии и current=0 не центрируется до первого шага.
-        if (this.renderer && typeof this.renderer.resetStripWindow === 'function') {
-            this.renderer.resetStripWindow();
-        }
-        
-        // Обратный отсчет
-        await this.renderer.showCountdown();
-        
-        this.state = 'RUNNING';
-        this._pausedByOverlay = false;
-        this._pauseStartTime = null;
-        this.lastUpdateTime = performance.now();
-        this.lastSnapshotTime = Date.now();
-        this.userInteracted = true; // Помечаем как взаимодействовал (клик на PLAY)
+            // ВАЖНО: при новой игре пересоздаем DOM-окно ленты,
+            // иначе там остаются значения из прошлой сессии и current=0 не центрируется до первого шага.
+            if (this.renderer && typeof this.renderer.resetStripWindow === 'function') {
+                this.renderer.resetStripWindow();
+            }
+            // После reset/overlay-переходов (особенно mobile viewport) пересчитываем геометрию рта/ленты.
+            if (this.renderer && typeof this.renderer.setupFocusZone === 'function') {
+                this.renderer.setupFocusZone();
+            }
 
-        // Сброс состояния смерти для новой сессии
-        this.deathInProgress = false;
-        
-        // Кнопка BITE уже есть в HTML, не создаем динамически
-        
-        // Запуск аудио при старте таймера (после взаимодействия пользователя)
-        this.audio.play();
-        
-        // Сбрасываем состояние рендера перед новой сессией
-        if (this.renderer) {
-            if (typeof this.renderer.stopStripAnimation === 'function') this.renderer.stopStripAnimation();
-            if (typeof this.renderer.stopCircleAnimation === 'function') this.renderer.stopCircleAnimation();
-        }
+            // Обратный отсчет
+            await this.renderer.showCountdown();
 
-        // Рендерим ленту для начального состояния
-        this.renderer.renderNumberStrip(this.timer);
-        
+            this.state = 'RUNNING';
+            this._pausedByOverlay = false;
+            this._pauseStartTime = null;
+            this.lastUpdateTime = performance.now();
+            this.lastSnapshotTime = Date.now();
+            this.userInteracted = true; // Помечаем как взаимодействовал (клик на PLAY)
+
+            // Сброс состояния смерти для новой сессии
+            this.deathInProgress = false;
+
+            // Кнопка BITE уже есть в HTML, не создаем динамически
+
+            // Запуск аудио при старте таймера (после взаимодействия пользователя)
+            this.audio.play();
+
+            // Сбрасываем состояние рендера перед новой сессией
+            if (this.renderer) {
+                if (typeof this.renderer.stopStripAnimation === 'function') this.renderer.stopStripAnimation();
+                if (typeof this.renderer.stopCircleAnimation === 'function') this.renderer.stopCircleAnimation();
+                if (typeof this.renderer.setupFocusZone === 'function') this.renderer.setupFocusZone();
+            }
+
+            // Рендерим ленту для начального состояния
+            this.renderer.renderNumberStrip(this.timer);
+
             // Запуск игрового цикла
             this.gameLoop();
         } finally {
@@ -785,8 +827,12 @@ class Game {
     render() {
         // Лента обновляется в Renderer (physics/conveyor) каждый кадр из gameLoop.
 
-        // UI
-        this.updateUI();
+        // UI: не перерисовываем HUD на каждом кадре, чтобы снизить частоту DOM-мутций.
+        const now = performance.now();
+        if ((now - this.lastUiRenderAt) >= this.uiRenderIntervalMs) {
+            this.updateUI();
+            this.lastUiRenderAt = now;
+        }
 
         // Конвейер: позиция ленты обновляется каждый кадр
         if (this.renderer && typeof this.renderer.updateConveyor === 'function') {
@@ -1145,6 +1191,11 @@ class Game {
         this.hideGameOverOverlay();
         while (this.topOverlayId) {
             this.closeTopOverlay();
+        }
+
+        if (this.renderer) {
+            if (typeof this.renderer.resetStripWindow === 'function') this.renderer.resetStripWindow();
+            if (typeof this.renderer.setupFocusZone === 'function') this.renderer.setupFocusZone();
         }
         
         // Показываем стартовый экран
@@ -1561,4 +1612,3 @@ class Game {
         console.log('[DEBUG] Progress has been reset (local + GamePush)');
     }
 }
-

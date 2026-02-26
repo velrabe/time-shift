@@ -4,6 +4,7 @@ class PenguinRig {
         this.getGameArea = options.getGameArea;
         this.isDebugEnabled = options.isDebugEnabled;
         this.dbgLog = options.dbgLog;
+        this.cachedParts = null;
 
         this.mouthHeld = false;
         this.mouthHoldStartTimeMs = 0;
@@ -32,6 +33,11 @@ class PenguinRig {
     getPenguinParts() {
         const root = this.focusZone;
         if (!root) return null;
+
+        if (this.cachedParts?.root?.isConnected) {
+            return this.cachedParts;
+        }
+
         const head = root.querySelector('#penguin-head-layer');
         const eye = root.querySelector('#penguin-eye-layer');
         const rightColliderLayer = root.querySelector('#penguin-right-collider-layer');
@@ -49,11 +55,12 @@ class PenguinRig {
         const botToothCols = Array.from(botJaw?.querySelectorAll?.('.penguin-tooth-col') || []);
         const topToothColliderPaths = topToothCols.map((svg) => svg.querySelector('path')).filter(Boolean).slice(0, 5);
         const botToothColliderPaths = botToothCols.map((svg) => svg.querySelector('path')).filter(Boolean).slice(0, 5);
-        return {
+        this.cachedParts = {
             root, head, eye, topJawBack, botJawBack, topJaw, botJaw, topJawImg, botJawImg,
             leftColliderPath, rightColliderPath,
             topToothColliderPaths, botToothColliderPaths
         };
+        return this.cachedParts;
     }
 
     applyMouthPose(open) {
@@ -104,6 +111,7 @@ class PenguinRig {
         this.mouthFrozen = false;
         const parts = this.getPenguinParts();
         if (!parts?.root) return;
+        this.restoreMouthLayerTransitions(parts);
         if (this.mouthCloseSettleTimeoutId) {
             window.clearTimeout(this.mouthCloseSettleTimeoutId);
             this.mouthCloseSettleTimeoutId = null;
@@ -113,6 +121,26 @@ class PenguinRig {
         this.mouthOpen = false;
         this.mouthFullyClosed = true;
         this.applyMouthPose(false);
+    }
+
+    restoreMouthLayerTransitions(partsInput = null) {
+        const parts = partsInput || this.getPenguinParts();
+        if (!parts?.root) return;
+        const layers = [
+            parts.head,
+            parts.eye,
+            parts.topJawBack,
+            parts.botJawBack,
+            parts.topJaw,
+            parts.botJaw
+        ];
+        for (let i = 0; i < layers.length; i++) {
+            const el = layers[i];
+            if (!el) continue;
+            // Возвращаем управление transition/transform-origin обратно в CSS.
+            el.style.removeProperty('transition');
+            el.style.removeProperty('transform-origin');
+        }
     }
 
     /** Замораживает челюсть в текущей позе (для геймовера по льду на 5-м зубе). */
@@ -141,6 +169,7 @@ class PenguinRig {
 
     resetPenguinState() {
         this.stopAllBites();
+        this.restoreMouthLayerTransitions();
         this.resetTimingTeethFx();
     }
 
@@ -191,6 +220,10 @@ class PenguinRig {
     setMouthHeld(held) {
         const parts = this.getPenguinParts();
         if (!parts?.root) return;
+        if (!this.mouthFrozen) {
+            // Защита от "залипания" transition:none после аварийных состояний.
+            this.restoreMouthLayerTransitions(parts);
+        }
 
         const nextHeld = !!held;
         if (nextHeld === !!this.mouthHeld) return;

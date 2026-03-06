@@ -18,6 +18,12 @@
             HUD_SLOW: 'SLOW',
             HUD_SHIELD: 'SHIELD',
             HUD_BITE: 'BITE',
+            HUD_SWALLOW: 'SWALLOW',
+            HUD_CHOMP: 'CHOMP',
+            HUD_MEGA: 'MEGA',
+            HUD_STATUS_BITE: 'Crush ice, chomp rewards',
+            HUD_STATUS_SWALLOW: 'Swallow food, action big bites',
+            HUD_STATUS_STUN: 'Stun',
             HUD_BEST_SCORE_LABEL: 'Best Score',
             HUD_PERKS_LABEL: 'Perks',
 
@@ -64,6 +70,12 @@
             HUD_SLOW: 'ЗАМЕДЛЕНИЕ',
             HUD_SHIELD: 'ЩИТ',
             HUD_BITE: 'КУСЬ',
+            HUD_SWALLOW: 'ГЛОТЬ',
+            HUD_CHOMP: 'ЧОМП',
+            HUD_MEGA: 'МЕГА',
+            HUD_STATUS_BITE: 'Кроши лёд, жми action на награды',
+            HUD_STATUS_SWALLOW: 'Глотай еду, жми action на крупную',
+            HUD_STATUS_STUN: 'Оглушение',
             HUD_BEST_SCORE_LABEL: 'Лучший счет',
             HUD_PERKS_LABEL: 'Навыки',
 
@@ -145,8 +157,10 @@
         if (slowHud) slowHud.textContent = dict.HUD_SLOW;
         const shieldHud = q('#shield-btn span:not(.action-hotkey)');
         if (shieldHud) shieldHud.textContent = dict.HUD_SHIELD;
-        const biteLabel = q('#bite-btn .action-bite-label');
+        const biteLabel = q('#mode-bite-btn .mode-toggle-label');
         if (biteLabel) biteLabel.textContent = dict.HUD_BITE;
+        const swallowLabel = q('#mode-swallow-btn .mode-toggle-label');
+        if (swallowLabel) swallowLabel.textContent = dict.HUD_SWALLOW;
 
         const bestScoreLabel = q('.score-best-label');
         if (bestScoreLabel && dict.HUD_BEST_SCORE_LABEL) {
@@ -265,4 +279,3 @@
         document.addEventListener('DOMContentLoaded', () => I18N.init(), { once: true });
     }
 }());
-

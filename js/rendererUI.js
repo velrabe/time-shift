@@ -24,21 +24,28 @@ class RendererUI {
         const bestScoreEl = document.getElementById('best-score');
         const bestRankEl = document.getElementById('best-rank');
         const bestHintEl = document.getElementById('best-hint');
-        const streakProgressEl = document.getElementById('streak-progress');
-        const coinRushCounterEl = document.getElementById('coin-rush-counter');
-        const coinRushSegments = streakProgressEl?.querySelectorAll('.coin-rush-segment-fill') || [];
-        const coinRushButton = document.getElementById('coin-rush-button');
+        const modePillEl = document.getElementById('mode-pill');
+        const hpValueEl = document.getElementById('hp-value');
+        const statusTextEl = document.getElementById('status-text');
+        const actionBtn = document.getElementById('action-btn');
+        const actionBtnLabel = document.getElementById('action-btn-label');
+        const swallowModeBtn = document.getElementById('mode-swallow-btn');
+        const biteModeBtn = document.getElementById('mode-bite-btn');
         const slowdownBtn = document.getElementById('slowdown-btn');
         const soundBtn = document.getElementById('sound-btn');
 
         const score = Math.floor(state?.score ?? 0);
         const best = Math.floor(state?.bestScore ?? 0);
-        const rushProgress = Math.max(0, Math.floor(state?.coinRushProgress ?? state?.streakPoints ?? 0));
-        const rushTarget = Math.max(10, Math.floor(state?.coinRushTarget ?? 20));
-        const rushReady = rushProgress >= rushTarget && !state?.coinRushActive;
         const rank = typeof state?.leaderboardRank === 'number' ? state.leaderboardRank : null;
         const slowCooldownSec = Math.ceil(Math.max(0, state?.slowCooldownRemainingMs || 0) / 1000);
         const shieldCooldownSec = Math.ceil(Math.max(0, state?.shieldCooldownRemainingMs || 0) / 1000);
+        const mode = state?.mode === 'bite' ? 'bite' : 'swallow';
+        const hp = Math.max(0, Math.floor(state?.hp ?? 3));
+        const maxHp = Math.max(1, Math.floor(state?.maxHp ?? 3));
+        const stunned = !!state?.stunned;
+        const t = (key, fallback) => (window.I18N && typeof window.I18N.t === 'function')
+            ? window.I18N.t(key)
+            : fallback;
 
         if (scoreValueEl) scoreValueEl.textContent = score;
         if (bestScoreEl) bestScoreEl.textContent = best;
@@ -46,38 +53,34 @@ class RendererUI {
             bestRankEl.textContent = rank && rank > 0 ? `#${rank}` : '#—';
         }
 
-        if (coinRushCounterEl) {
-            coinRushCounterEl.textContent = state?.coinRushActive ? 'RUSH!' : `${rushProgress}/${rushTarget}`;
+        if (modePillEl) {
+            modePillEl.textContent = mode === 'bite' ? t('HUD_BITE', 'BITE') : t('HUD_SWALLOW', 'SWALLOW');
+            modePillEl.classList.toggle('status-pill--bite', mode === 'bite');
+            modePillEl.classList.toggle('status-pill--swallow', mode !== 'bite');
         }
-        const segmentCount = Math.max(1, coinRushSegments.length || 1);
-        const ratio = Math.max(0, Math.min(1, rushTarget > 0 ? (rushProgress / rushTarget) : 0));
-        coinRushSegments.forEach((fillEl, i) => {
-            const segmentStart = i / segmentCount;
-            const segmentEnd = (i + 1) / segmentCount;
-            const local = ratio <= segmentStart ? 0 : Math.min(1, (ratio - segmentStart) / Math.max(0.0001, (segmentEnd - segmentStart)));
-            if (fillEl) fillEl.style.width = `${(local * 100).toFixed(2)}%`;
-        });
-
-        if (streakProgressEl) {
-            const prev = this._lastStreak ?? 0;
-            // Кнопка показывается только во время активного Coin Rush
-            if (state?.coinRushActive) {
-                if (coinRushButton) {
-                    coinRushButton.classList.remove('hidden');
-                    coinRushButton.classList.add('coin-rush-active');
-                }
-                streakProgressEl.classList.add('coin-rush-filled');
-            } else {
-                if (coinRushButton) {
-                    coinRushButton.classList.add('hidden');
-                    coinRushButton.classList.remove('coin-rush-active');
-                }
-                streakProgressEl.classList.remove('coin-rush-filled', 'coin-rush-ready');
-                if (rushReady) {
-                    streakProgressEl.classList.add('coin-rush-ready');
-                }
-            }
-            this._lastStreak = rushProgress;
+        if (hpValueEl) {
+            hpValueEl.textContent = `${hp}/${maxHp}`;
+        }
+        if (statusTextEl) {
+            statusTextEl.textContent = stunned
+                ? `${t('HUD_STATUS_STUN', 'Stun')} ${Math.max(0, Math.ceil((state?.stunRemainingMs || 0) / 100) / 10).toFixed(1)}s`
+                : (mode === 'bite' ? t('HUD_STATUS_BITE', 'Crush ice, chomp rewards') : t('HUD_STATUS_SWALLOW', 'Swallow food, action big bites'));
+        }
+        if (actionBtnLabel) {
+            actionBtnLabel.textContent = mode === 'bite' ? t('HUD_CHOMP', 'CHOMP') : t('HUD_MEGA', 'MEGA');
+        }
+        if (actionBtn) {
+            const canUseAction = state?.gameStatus === 'RUNNING' && !state?.inputLocked;
+            actionBtn.disabled = !canUseAction;
+            actionBtn.classList.toggle('is-swallow', mode === 'swallow');
+        }
+        if (swallowModeBtn) {
+            swallowModeBtn.classList.toggle('is-active', mode === 'swallow');
+            swallowModeBtn.disabled = state?.gameStatus !== 'RUNNING' || !!state?.stunned;
+        }
+        if (biteModeBtn) {
+            biteModeBtn.classList.toggle('is-active', mode === 'bite');
+            biteModeBtn.disabled = state?.gameStatus !== 'RUNNING' || !!state?.stunned;
         }
 
         const slowSpellCount = Math.max(0, state?.slowSpellCount ?? 1);

@@ -36,22 +36,10 @@
                         </div>
                     </div>
 
-                    <div id="streak-progress" class="coin-rush-wrapper" aria-label="Coin Rush progress">
-                        <div id="coin-rush-container" class="coin-rush-container">
-                            <div class="coin-rush-bar" role="progressbar" aria-valuemin="0" aria-valuemax="20" aria-valuenow="0">
-                                <div class="coin-rush-segment"><div class="coin-rush-segment-fill"></div></div>
-                                <div class="coin-rush-segment"><div class="coin-rush-segment-fill"></div></div>
-                            </div>
-                            <div id="coin-rush-counter" class="coin-rush-counter">0/50</div>
-                        </div>
-                        <div id="coin-rush-button" class="coin-rush-button hidden" role="button" tabindex="0" aria-label="Coin Rush">
-                            <div class="coin-rush-button-inner">
-                                <div class="coin-rush-button-icon">
-                                    <img src="img/ui/rocket.svg" alt="" aria-hidden="true">
-                                </div>
-                                <span class="coin-rush-button-text">Coin Rush</span>
-                                <div class="coin-rush-button-hotkey"><span>SHIFT</span></div>
-                            </div>
+                    <div id="run-status" class="run-status" aria-live="polite">
+                        <div class="status-pill status-pill--hp">
+                            <span class="status-pill-label">HP</span>
+                            <span id="hp-value">3/3</span>
                         </div>
                     </div>
 
@@ -196,15 +184,35 @@
                     </button>
                     <div class="action-spell-count" data-count="1">x1</div>
                 </div>
+                <div class="mode-toggle-group" aria-label="Mode selection">
+                    <button
+                        id="mode-swallow-btn"
+                        class="mode-toggle-btn"
+                        type="button"
+                        aria-label="Swallow mode"
+                    >
+                        <span class="mode-toggle-label">SWALLOW</span>
+                        <span class="action-hotkey">W</span>
+                    </button>
+                    <button
+                        id="mode-bite-btn"
+                        class="mode-toggle-btn"
+                        type="button"
+                        aria-label="Bite mode"
+                    >
+                        <span class="mode-toggle-label">BITE</span>
+                        <span class="action-hotkey">S</span>
+                    </button>
+                </div>
                 <div class="action-btn-wrap action-btn--bite">
                     <button
-                        id="bite-btn"
+                        id="action-btn"
                         class="action-bite-btn"
                         type="button"
-                        aria-label="Bite"
+                        aria-label="Action"
                     >
-                        <span class="action-bite-label">BITE</span>
-                        <span class="action-hotkey">SPACE</span>
+                        <span id="action-btn-label" class="action-bite-label">CHOMP</span>
+                        <span class="action-hotkey">D / SPACE</span>
                     </button>
                 </div>
                 <div id="shield-btn-wrap" class="action-btn-wrap action-btn--spell">
@@ -477,4 +485,3 @@
     <script src="js/main.js"></script>
 </body>
 </html>
-

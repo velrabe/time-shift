@@ -32,27 +32,19 @@ class Renderer {
 
         this.stripConveyor = new StripConveyorSystem({
             numberStrip: this.numberStrip,
-            getGameArea: () => document.getElementById('game-area'),
+            getGameArea: () => this.focusZone,
             getFocusAnchorX: (container) => this.getFocusAnchorX(container),
             ensureFoodCircle: (circleEl) => this.ensureFoodCircle(circleEl),
             applyDebugLabelToCircle: (circleEl) => this.applyDebugLabelToCircle(circleEl),
             checkCollisionsAndAutoBite: (container) => this.checkCollisionsAndAutoBite(container)
         });
         this.collisionEngine = new CollisionEngine({
-            getNumberStrip: () => this.numberStrip,
-            getPenguinParts: () => this.penguinRig.getPenguinParts(),
-            isMouthOpen: () => this.penguinRig.isMouthOpen(),
-            isMouthFullyClosed: () => this.penguinRig.isMouthFullyClosed(),
+            getItems: () => this.stripConveyor.getActiveItems(),
+            getInteractionMetrics: (container) => this.penguinRig.getInteractionMetrics(container),
+            getGameplayState: () => window.gameInstance?.getInteractionState?.() || null,
+            resolveItem: (item, resolution) => this.stripConveyor.resolveItem(item, resolution),
+            setAutoBiteHint: (active) => this.penguinRig.setAutoBiteHint(active),
             triggerTeethHitFx: () => this.penguinRig.triggerTimingTeethHitFx(),
-            isDebug: () => this.debug,
-            getDebugState: () => this._dbg,
-            animateEatIntoMouth: (circleEl, containerEl, containerRect, targetX, targetY) =>
-                this.animateEatIntoMouth(circleEl, containerEl, containerRect, targetX, targetY),
-            updateDebugObjectBoxes: (trackedCircle, containerRect, isColliding) =>
-                this.updateDebugObjectBoxes(trackedCircle, containerRect, isColliding),
-            updateDebugOverlay: (payload) => this.updateDebugOverlay(payload),
-            dbgLog: (key, payload, minIntervalMs) => this.dbgLog(key, payload, minIntervalMs),
-            updateStripMask: (pathD) => this.updateStripMask(pathD),
             emitEvent: (eventName, payload) => {
                 if (typeof eventBus !== 'undefined' && eventBus?.emit) {
                     eventBus.emit(eventName, payload);
@@ -61,7 +53,7 @@ class Renderer {
         });
         this.penguinRig = new PenguinRig({
             focusZone: this.focusZone,
-            getGameArea: () => document.getElementById('game-area'),
+            getGameArea: () => this.focusZone,
             isDebugEnabled: () => !!this._dbg?.enabled,
             dbgLog: (key, payload, minIntervalMs) => this.dbgLog(key, payload, minIntervalMs)
         });
@@ -264,6 +256,7 @@ class Renderer {
     getFoodSrc(base) {
         if (!base) return '';
         if (base === 'ice') return 'img/food/ice.svg';
+        if (base === 'hard-ice') return 'img/food/hard-ice.svg';
         if (base === 'coin') return 'img/food/coin.svg';
         return `img/food/${base}-s.svg`;
     }
@@ -271,6 +264,7 @@ class Renderer {
     getFoodSrcCandidates(base) {
         if (!base) return [];
         if (base === 'ice') return ['img/food/ice.svg'];
+        if (base === 'hard-ice') return ['img/food/hard-ice.svg'];
         if (base === 'coin') return ['img/food/coin.svg'];
         return [
             `img/food/${base}-s.svg`
@@ -389,11 +383,14 @@ class Renderer {
         }
     }
 
+    getStripBaseUnit() {
+        const scope = this.focusZone || document.documentElement;
+        const raw = parseFloat(getComputedStyle(scope).getPropertyValue('--circle-size'));
+        return Number.isFinite(raw) && raw > 0 ? raw : 63;
+    }
+
     ensureFoodCircle(circleEl) {
         if (!circleEl) return;
-        if (circleEl.dataset?.swallowBoost !== 'true') {
-            circleEl.style.removeProperty('transform');
-        }
         let img = circleEl.querySelector('img.food-img');
         if (!img) {
             img = document.createElement('img');
@@ -401,17 +398,12 @@ class Renderer {
             img.alt = '';
             img.draggable = false;
             img.decoding = 'async';
-            // eager — картинки появляются сразу. При тяжёлых SVG даёт лаги; с чистыми SVG без base64 — ок.
             img.loading = 'eager';
-            
-            // После загрузки изображения обновляем размер контейнера под реальные пропорции
             img.addEventListener('load', () => {
                 this.updateFoodContainerSize(circleEl, img);
             });
             img.addEventListener('error', () => {
-                const itemType = circleEl?.dataset?.itemType || 'food';
-                if (itemType !== 'food') return;
-                const base = circleEl?.dataset?.foodBase || 'f1';
+                const base = circleEl?.dataset?.foodBase || 'f2';
                 const candidates = this.getFoodSrcCandidates(base);
                 const idx = Math.max(0, Number(circleEl.dataset.foodSrcIdx || 0));
                 const nextIdx = idx + 1;
@@ -432,40 +424,39 @@ class Renderer {
             circleEl.appendChild(img);
         }
 
-        const value = parseInt(circleEl.dataset.value, 10);
-        const rushActive = !!window.gameInstance?.isCoinRushActive?.();
-        const storedType = circleEl?.dataset?.itemType;
-        const hasStoredType = storedType === 'food' || storedType === 'coin' || storedType === 'ice';
-        const itemType = rushActive
-            ? 'coin'
-            : (hasStoredType ? storedType : this.getItemTypeForValue(value));
-        const base = circleEl.dataset.foodBase || (itemType === 'ice' ? 'ice' : this.getRandomFoodBase() || this.getFoodBaseForValue(value) || 'f1');
+        let badge = circleEl.querySelector('.item-badge');
+        if (!badge) {
+            badge = document.createElement('span');
+            badge.className = 'item-badge';
+            circleEl.appendChild(badge);
+        }
+
+        const kind = circleEl.dataset.itemKind || 'edible';
+        const baseByKind = {
+            edible: circleEl.dataset.foodBase || 'f2',
+            'big-edible': 'f1',
+            coin: 'coin',
+            ice: 'ice',
+            'reinforced-ice': 'hard-ice',
+            'hard-obstacle': 'hard-ice'
+        };
+        const base = baseByKind[kind] || circleEl.dataset.foodBase || 'f2';
+        const itemType = kind === 'coin' ? 'coin' : ((kind === 'ice' || kind === 'reinforced-ice' || kind === 'hard-obstacle') ? 'ice' : 'food');
 
         circleEl.dataset.foodBase = base;
         circleEl.dataset.itemType = itemType;
-        if (itemType === 'food') {
-            circleEl.dataset.foodSrcIdx = '0';
-            const candidates = this.getFoodSrcCandidates(base);
-            this.setImageSrcIfChanged(img, candidates[0] || '');
-            this.ensureFoodCollider(circleEl, base);
-            this.setFoodPlaceholderSize(circleEl, img);
-        } else if (itemType === 'ice') {
-            circleEl.dataset.foodBase = 'ice';
-            this.setImageSrcIfChanged(img, this.getItemSrc('ice', 'ice'));
-            this.ensureFoodCollider(circleEl, 'ice');
-            this.setFoodPlaceholderSize(circleEl, img);
-        } else {
-            // При Coin Rush круги могут менять тип: сбрасываем старый коллайдер еды
-            // и добавляем коллайдер монеты при необходимости.
-            const oldCollider = circleEl.querySelector('.food-collider');
-            if (oldCollider) oldCollider.remove();
-            this.setImageSrcIfChanged(img, this.getItemSrc(itemType, base));
-            if (itemType === 'coin') {
-                this.ensureFoodCollider(circleEl, 'coin');
-            }
-            this.setFoodPlaceholderSize(circleEl, img);
-        }
-        
+        circleEl.dataset.foodSrcIdx = '0';
+        this.setImageSrcIfChanged(img, this.getFoodSrc(base));
+        this.setFoodPlaceholderSize(circleEl, img);
+
+        circleEl.classList.toggle('item-kind--big', kind === 'big-edible');
+        circleEl.classList.toggle('item-kind--reward', kind === 'reinforced-ice');
+        circleEl.classList.toggle('item-kind--hard', kind === 'hard-obstacle');
+        badge.textContent = kind === 'reinforced-ice'
+            ? '+5'
+            : (kind === 'big-edible' ? 'MEGA' : (kind === 'hard-obstacle' ? 'HARD' : ''));
+        badge.classList.toggle('hidden', !badge.textContent);
+
         if (img.complete && img.naturalWidth > 0) {
             this.updateFoodContainerSize(circleEl, img);
         }
@@ -474,23 +465,10 @@ class Renderer {
     /** Задаёт размер img до загрузки, чтобы не было "прыжка" с исходных размеров SVG. */
     setFoodPlaceholderSize(circleEl, img) {
         if (!circleEl || !img) return;
-        const headHeight = this.getPenguinHeadHeight() || 0;
         const sizeScale = this.getSizeScaleForCircle(circleEl);
-
-        let placeholderH;
-        let placeholderW;
-
-        if (headHeight > 0) {
-            // Основной путь: высота слота пропорциональна высоте головы пингвина.
-            placeholderH = headHeight * sizeScale;
-            // До загрузки точное соотношение сторон неизвестно, берём квадратный слот.
-            placeholderW = placeholderH;
-        } else {
-            // Fallback: старый режим через circle-size, если почему-то недоступна голова.
-            const baseUnit = parseFloat(getComputedStyle(circleEl).getPropertyValue('--circle-size')) || 63;
-            placeholderH = baseUnit * 1.6 * sizeScale;
-            placeholderW = placeholderH;
-        }
+        const baseUnit = this.getStripBaseUnit();
+        const placeholderH = baseUnit * 1.6 * sizeScale;
+        const placeholderW = placeholderH;
 
         // Слот по ширине/высоте объекта (контейнер совпадает по кадру с пингвином).
         circleEl.style.width = `${placeholderW}px`;
@@ -508,19 +486,9 @@ class Renderer {
         if (naturalWidth === 0 || naturalHeight === 0) return;
 
         const sizeScale = this.getSizeScaleForCircle(circleEl);
-        const headHeight = this.getPenguinHeadHeight();
-
-        let globalScale;
-        if (headHeight && headHeight > 0) {
-            // Нормируем весь спрайт по высоте головы пингвина:
-            // итоговая высота объекта = высота головы * sizeScale.
-            globalScale = (headHeight / naturalHeight) * sizeScale;
-        } else {
-            // Fallback: если по какой-то причине высота головы недоступна, используем прежнюю логику.
-            const baseUnit = parseFloat(getComputedStyle(circleEl).getPropertyValue('--circle-size')) || 63;
-            const baselineSmallHeight = naturalHeight || 1;
-            globalScale = (baseUnit / baselineSmallHeight) * sizeScale;
-        }
+        const baseUnit = this.getStripBaseUnit();
+        const targetHeightBase = baseUnit * 1.6 * sizeScale;
+        const globalScale = targetHeightBase / Math.max(1, naturalHeight);
 
         const targetWidth = naturalWidth * globalScale;
         const targetHeight = naturalHeight * globalScale;
@@ -612,11 +580,42 @@ class Renderer {
             teethBotPolyEls,
             rightColliderPolyEl: ensurePoly('debug-right-collider-poly', { fill: 'rgba(0,120,255,0.10)', stroke: 'rgba(0,120,255,0.95)' }),
             dangerPolyEl: ensurePoly('debug-danger-poly', { fill: 'rgba(0,150,255,0.08)', stroke: 'rgba(0,150,255,0.9)' }),
+            resolveSwallowZoneBox: ensure('debug-resolve-swallow-zone', 'debug-box debug-zone debug-zone--resolve-swallow'),
+            resolveBiteZoneBox: ensure('debug-resolve-bite-zone', 'debug-box debug-zone debug-zone--resolve-bite'),
+            actionZoneBox: ensure('debug-action-zone', 'debug-box debug-zone debug-zone--action'),
+            autoBiteZoneBox: ensure('debug-auto-zone', 'debug-box debug-zone debug-zone--auto'),
             jawTopBox: ensure('debug-jaw-top-box', 'debug-box debug-jaw-top'),
             dangerBox: ensure('debug-danger-box', 'debug-box debug-danger'),
             biteLine: ensure('debug-bite-line', 'debug-line debug-bite'),
             jawBottomLine: ensure('debug-jaw-bottom-line', 'debug-line debug-jaw-bottom')
         };
+    }
+
+    updateInteractionDebugZones(metrics, containerEl = this.focusZone) {
+        if (!this.debug || !this.debugEls || !metrics || !containerEl) return;
+        const gameArea = document.getElementById('game-area');
+        if (!gameArea) return;
+
+        const gameRect = gameArea.getBoundingClientRect();
+        const containerRect = containerEl.getBoundingClientRect();
+        const offsetLeft = containerRect.left - gameRect.left;
+        const offsetTop = containerRect.top - gameRect.top;
+        const top = offsetTop + (metrics.mouthCenterY - (metrics.mouthHeight * 0.9));
+        const height = metrics.mouthHeight * 1.8;
+
+        const placeZone = (el, leftX, rightX) => {
+            if (!el || !Number.isFinite(leftX) || !Number.isFinite(rightX)) return;
+            el.style.display = 'block';
+            el.style.left = `${offsetLeft + leftX}px`;
+            el.style.top = `${top}px`;
+            el.style.width = `${Math.max(2, rightX - leftX)}px`;
+            el.style.height = `${height}px`;
+        };
+
+        placeZone(this.debugEls.resolveSwallowZoneBox, metrics.resolveSwallowX - 3, metrics.resolveSwallowX + 3);
+        placeZone(this.debugEls.resolveBiteZoneBox, metrics.resolveBiteX - 3, metrics.resolveBiteX + 3);
+        placeZone(this.debugEls.actionZoneBox, metrics.actionLeftX, metrics.actionRightX);
+        placeZone(this.debugEls.autoBiteZoneBox, metrics.autoBiteLeftX, metrics.autoBiteRightX);
     }
 
     // Обновление границ объекта на ленте для debug (один объект: ближайший/в коллизии)
@@ -829,8 +828,7 @@ class Renderer {
     }
 
     setupFocusZone() {
-        // Вычисляем центр экрана
-        const container = document.getElementById('game-area');
+        const container = this.focusZone;
         // Кэшируем позицию рта в "спокойном" состоянии.
         // Даже если пингвин визуально двигается при укусе, лента должна ориентироваться на этот якорь.
         this._cachedMouthRightX = container ? this.penguinRig.getPenguinMouthRightX(container) : 0;
@@ -856,8 +854,9 @@ class Renderer {
             const headRect = headLayer?.getBoundingClientRect?.();
             if (!headRect) return;
 
-            const top = headRect.top - focusRect.top;
-            const height = headRect.height;
+            const padding = Math.max(6, headRect.height * 0.08);
+            const top = Math.max(0, (headRect.top - focusRect.top) - padding);
+            const height = headRect.height + (padding * 2);
 
             stripContainer.style.top = `${top}px`;
             stripContainer.style.bottom = 'auto';
@@ -874,15 +873,9 @@ class Renderer {
         try {
             const containerRect = containerEl.getBoundingClientRect();
 
-            // Хотим, чтобы в начале тика кружок был СНАРУЖИ пасти (касался рта),
-            // а "въезжал" внутрь по мере прогресса.
-            // Поэтому якорь = mouthRightX + radius(circle).
             const mouthRightX = (this._cachedMouthRightX > 0) ? this._cachedMouthRightX : this.penguinRig.getPenguinMouthRightX(containerEl);
             if (mouthRightX > 0) {
-                const circleEl = this.numberStrip?.querySelector('.number-circle');
-                const circleWidth = circleEl?.offsetWidth || 42;
-                const circleRadius = circleWidth / 2;
-                return mouthRightX + circleRadius;
+                return mouthRightX + 18;
             }
 
             const focusRect = this.focusZone?.getBoundingClientRect();
@@ -913,29 +906,42 @@ class Renderer {
 
     // Основной апдейт ленты и коллизий.
     updateConveyor(timer) {
-        const nowMs = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-
-        // Автозакрытие рта при удержании > max
-        if (this.penguinRig.isMouthHeld() && this.penguinRig.getMouthHoldStartTimeMs()) {
-            const maxMs = Number.isFinite(this._mouthHoldMaxMs) ? this._mouthHoldMaxMs : 2000;
-            if ((nowMs - this.penguinRig.getMouthHoldStartTimeMs()) >= maxMs) {
-                this.endBiteHold();
-            }
-        }
         this.stripConveyor.update(timer);
     }
 
     // Проверка коллизий с зубами и проглатывания.
     checkCollisionsAndAutoBite(container) {
+        if (this.debug) {
+            const metrics = this.penguinRig.getInteractionMetrics(container || this.focusZone);
+            if (metrics) this.updateInteractionDebugZones(metrics, container || this.focusZone);
+        }
         this.collisionEngine.check(container);
     }
 
+    setMode(mode) {
+        this.penguinRig.setMode(mode);
+    }
+
+    performAction() {
+        this.penguinRig.triggerAction(this.penguinRig.getMode() === 'bite' ? 'chomp' : 'mega-swallow');
+        return this.collisionEngine.handleAction(this.focusZone);
+    }
+
+    setHealth(hp, maxHp) {
+        this.penguinRig.setHealth(hp, maxHp);
+    }
+
+    setStunned(durationMs) {
+        if (durationMs > 0) this.penguinRig.setStunned(durationMs);
+        else this.penguinRig.clearStun();
+    }
+
     startBiteHold() {
-        this.penguinRig.startBiteHold();
+        this.setMode('swallow');
     }
 
     endBiteHold() {
-        this.penguinRig.endBiteHold();
+        this.setMode('bite');
     }
 
     // Анимация "+1" / "+2" при засчитанном укусе монетки
@@ -949,8 +955,12 @@ class Renderer {
         el.textContent = text;
         el.setAttribute('aria-hidden', 'true');
         if (typeof x === 'number' && typeof y === 'number') {
-            el.style.left = `${x}px`;
-            el.style.top = `${y}px`;
+            const gameRect = container.getBoundingClientRect();
+            const focusRect = this.focusZone?.getBoundingClientRect?.();
+            const offsetX = focusRect ? (focusRect.left - gameRect.left) : 0;
+            const offsetY = focusRect ? (focusRect.top - gameRect.top) : 0;
+            el.style.left = `${x + offsetX}px`;
+            el.style.top = `${y + offsetY}px`;
         } else {
             const rect = container.getBoundingClientRect();
             el.style.left = `${rect.width / 2}px`;
@@ -1080,4 +1090,3 @@ class Renderer {
         this.cloudsBackground.setupClouds();
     }
 }
-

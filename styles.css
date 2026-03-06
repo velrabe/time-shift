@@ -5,8 +5,13 @@
 }
 
 :root {
+    /* Global game scale (separate from UI scale) */
+    --game-scale-w: clamp(0.62, calc(100vw / 1440px), 1);
+    --game-scale-h: clamp(0.62, calc(100vh / 900px), 1);
+    --game-scale: min(var(--game-scale-w), var(--game-scale-h));
+
     /* Layout tuning */
-    --circle-size: 63px;
+    --circle-size: calc(63px * var(--game-scale));
     --lane-shift-y: calc(var(--circle-size) * 0.25); /* quarter of circle height */
 
     /* UI scale: 100% at 1920px, 60% at 760px, linear interpolation.
@@ -15,7 +20,7 @@
     --ui-scale: clamp(0.6, calc(0.6 + 0.4 * (100vw - 760px) / 1160px), 1);
 
     /* Penguin rig sizing */
-    --penguin-w: min(360px, 62vw);
+    --penguin-w: calc(360px * var(--game-scale));
     /* Все текущие head/jaw/tooth ассеты имеют единый фрейм 546x200. */
     --penguin-aspect-ratio: calc(546 / 200);
     --penguin-h: calc(var(--penguin-w) / var(--penguin-aspect-ratio));
@@ -852,7 +857,7 @@ body {
 /* Задняя часть пингвина (голова, глаз, коллайдеры, задние челюсти) — ниже ленты */
 .penguin-back {
     position: absolute;
-    left: -80px;
+    left: calc(-80px * var(--game-scale));
     top: 50%;
     transform: translateY(-50%) translateY(calc(var(--lane-shift-y) * -1));
     width: var(--penguin-w);
@@ -874,7 +879,7 @@ body {
 /* Передние челюсти — выше ленты */
 .penguin-front {
     position: absolute;
-    left: -80px;
+    left: calc(-80px * var(--game-scale));
     top: 50%;
     transform: translateY(-50%) translateY(calc(var(--lane-shift-y) * -1));
     width: var(--penguin-w);
@@ -890,7 +895,7 @@ body {
     aspect-ratio: var(--penguin-aspect-ratio);
     transform-origin: center center;
     will-change: transform;
-    left: -22px;
+    left: calc(-22px * var(--game-scale));
 }
 
 /* Penguin rig root */
@@ -1129,6 +1134,7 @@ body {
     color: #ffffff;
     text-transform: uppercase;
     transition: filter 0.12s ease, transform 0.12s ease;
+    touch-action: manipulation;
 }
 
 .action-spell-btn:hover:not(:disabled) {
@@ -2310,17 +2316,134 @@ body {
 }
 
 /* Responsive */
-@media (max-width: 768px) {
+@media (max-width: 768px),
+       ((hover: none) and (pointer: coarse) and (max-height: 560px)),
+       ((hover: none) and (pointer: coarse) and (max-width: 1024px) and (max-height: 700px)) {
     :root {
-        --circle-size: 34px;
+        /* Compact mode: aggressively reduce both UI and gameplay scale for short mobile viewports. */
+        --ui-scale: clamp(0.42, calc(100vh / 860px), 0.78);
+        --ui-scale: clamp(0.42, calc(100dvh / 860px), 0.78);
+        --game-scale: clamp(0.48, calc(100vh / 760px), 0.82);
+        --game-scale: clamp(0.48, calc(100dvh / 760px), 0.82);
     }
+
+    #hud {
+        top: calc(8px + env(safe-area-inset-top));
+        left: 8px;
+        right: 8px;
+    }
+
+    #hud-top {
+        gap: calc(8px * var(--ui-scale));
+        align-items: flex-start;
+    }
+
+    /* Compact mobile HUD: score card should not occupy half of the screen */
+    #best-hint {
+        max-width: 58vw;
+    }
+
+    #best-hint .score-current {
+        padding: calc(10px * var(--ui-scale)) calc(12px * var(--ui-scale));
+        gap: calc(4px * var(--ui-scale));
+    }
+
+    #best-hint .score-value {
+        font-size: calc(30px * var(--ui-scale));
+    }
+
+    #best-hint .score-best-label,
+    #best-hint .score-best-value {
+        font-size: calc(16px * var(--ui-scale));
+    }
+
+    #best-hint .score-rank {
+        gap: calc(8px * var(--ui-scale));
+        padding: calc(10px * var(--ui-scale)) calc(12px * var(--ui-scale));
+    }
+
+    #best-hint .score-rank-label {
+        display: none;
+    }
+
+    #best-hint .score-rank-icon {
+        padding: calc(4px * var(--ui-scale));
+    }
+
+    #best-hint .score-rank-icon img {
+        width: calc(22px * var(--ui-scale));
+        height: calc(22px * var(--ui-scale));
+    }
+
+    #best-hint .score-rank-value {
+        font-size: calc(20px * var(--ui-scale));
+    }
+
+    /* Keep penguin gameplay lane lower on short mobile viewports */
+    .penguin-back,
+    .penguin-front {
+        top: 56%;
+    }
+
+    #game-over-screen.overlay-screen {
+        align-items: center;
+        overflow-y: auto;
+        padding-top: calc(8px + env(safe-area-inset-top));
+        padding-bottom: calc(8px + env(safe-area-inset-bottom));
+    }
+
+    .game-over-popup {
+        max-height: calc(100vh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 16px);
+        max-height: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 16px);
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    #controls {
+        left: 12px;
+        right: 12px;
+        bottom: calc(12px + env(safe-area-inset-bottom));
+        justify-content: stretch;
+    }
+
+    #control-buttons {
+        width: 100%;
+        display: grid;
+        grid-template-columns: auto auto 1fr auto;
+        grid-template-areas:
+            "slow shield . bite";
+        align-items: end;
+        column-gap: calc(12px * var(--ui-scale));
+        row-gap: 0;
+    }
+
+    #slow-btn-wrap {
+        grid-area: slow;
+        justify-self: start;
+    }
+
+    #shield-btn-wrap {
+        grid-area: shield;
+        justify-self: start;
+    }
+
+    .action-btn--bite {
+        grid-area: bite;
+        justify-self: end;
+        align-self: end;
+    }
+
+    #controls .action-hotkey {
+        display: none;
+    }
+
     .number-circle {
         margin: 0 12px;
     }
     
     .number-circle.active {
-        /* То же правило: не менять layout, только transform */
-        transform: scale(1.25);
+        /* Не увеличиваем активный объект: это ломает ощущение стабильной геометрии ленты. */
+        transform: none;
     }
     
     .control-btn {
@@ -2331,19 +2454,6 @@ body {
         border-radius: 26px;
     }
     
-    #focus-zone {
-        width: var(--penguin-w);
-        height: var(--penguin-h);
-    }
-
-    /* .focus-penguin keeps head aspect ratio globally; no mobile override */
-
-    #hud {
-        top: 12px;
-        left: 12px;
-        right: 12px;
-    }
-
     .hud-icon-btn-inner {
         width: calc(100px * var(--ui-scale));
         height: calc(100px * var(--ui-scale));
@@ -2354,4 +2464,3 @@ body {
         height: calc(64px * var(--ui-scale));
     }
 }
-

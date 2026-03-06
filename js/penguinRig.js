@@ -5,250 +5,326 @@ class PenguinRig {
         this.isDebugEnabled = options.isDebugEnabled;
         this.dbgLog = options.dbgLog;
 
-        this.mouthHeld = false;
-        this.mouthHoldStartTimeMs = 0;
-        this.mouthOpen = false;
-        this.mouthFullyClosed = true;
-        this.mouthCloseSettleTimeoutId = null;
+        this.mode = 'swallow';
+        this.transitionDurationMs = 200;
+        this.transitionUntil = 0;
+        this.actionUntil = 0;
+        this.actionType = null;
+        this.autoBiteHint = false;
+        this.stunUntil = 0;
+        this.hp = 3;
+        this.maxHp = 3;
         this.mouthFrozen = false;
+        this.jammed = false;
+        this._hitFxTimeoutId = null;
+        this._swallowPulseTimeoutId = null;
+        this._biteCrunchTimeoutId = null;
+        this.swallowPulseActive = false;
+        this.biteCrunchActive = false;
     }
 
-    isMouthHeld() {
-        return !!this.mouthHeld;
-    }
-
-    isMouthOpen() {
-        return !!this.mouthOpen;
-    }
-
-    isMouthFullyClosed() {
-        return !!this.mouthFullyClosed;
-    }
-
-    getMouthHoldStartTimeMs() {
-        return this.mouthHoldStartTimeMs;
+    getNowMs() {
+        return (typeof performance !== 'undefined' && typeof performance.now === 'function')
+            ? performance.now()
+            : Date.now();
     }
 
     getPenguinParts() {
-        const root = this.focusZone;
+        const zone = this.focusZone;
+        if (!zone) return null;
+        const backRoot = zone.querySelector('#penguin-root');
+        const frontRoot = zone.querySelector('#penguin-jaws-root');
+        const root = backRoot || frontRoot;
         if (!root) return null;
-        const head = root.querySelector('#penguin-head-layer');
-        const eye = root.querySelector('#penguin-eye-layer');
-        const rightColliderLayer = root.querySelector('#penguin-right-collider-layer');
-        const topJawBack = root.querySelector('#penguin-top-jaw-back');
-        const botJawBack = root.querySelector('#penguin-bot-jaw-back');
-        const topJaw = root.querySelector('#penguin-top-jaw');
-        const botJaw = root.querySelector('#penguin-bot-jaw');
-        const topJawImg = topJaw?.querySelector?.('.penguin-jaw-base') || null;
-        const botJawImg = botJaw?.querySelector?.('.penguin-jaw-base') || null;
-        const leftColliderLayer = root.querySelector('#penguin-left-collider-layer');
-        const rightColliderPath = rightColliderLayer?.querySelector?.('#penguin-right-collider-path') || null;
-        const leftColliderPath = leftColliderLayer?.querySelector?.('#penguin-left-collider-path') || null;
-        // Коллайдеры зубов 1–5: для еды — только зуб 1 (индекс 0); для льда — зубы 1–4 crack, зуб 5 (индекс 4) геймовер
-        const topToothCols = Array.from(topJaw?.querySelectorAll?.('.penguin-tooth-col') || []);
-        const botToothCols = Array.from(botJaw?.querySelectorAll?.('.penguin-tooth-col') || []);
-        const topToothColliderPaths = topToothCols.map((svg) => svg.querySelector('path')).filter(Boolean).slice(0, 5);
-        const botToothColliderPaths = botToothCols.map((svg) => svg.querySelector('path')).filter(Boolean).slice(0, 5);
+
+        const topJaw = zone.querySelector('#penguin-top-jaw');
+        const botJaw = zone.querySelector('#penguin-bot-jaw');
+        const topJawBack = zone.querySelector('#penguin-top-jaw-back');
+        const botJawBack = zone.querySelector('#penguin-bot-jaw-back');
+        const head = zone.querySelector('#penguin-head-layer');
+        const eye = zone.querySelector('#penguin-eye-layer');
+        const leftColliderPath = zone.querySelector('#penguin-left-collider-path');
+        const rightColliderPath = zone.querySelector('#penguin-right-collider-path');
+
+        const topTeeth = Array.from(zone.querySelectorAll('#penguin-top-jaw .penguin-tooth')).slice(0, 5);
+        const botTeeth = Array.from(zone.querySelectorAll('#penguin-bot-jaw .penguin-tooth')).slice(0, 5);
+
         return {
-            root, head, eye, topJawBack, botJawBack, topJaw, botJaw, topJawImg, botJawImg,
-            leftColliderPath, rightColliderPath,
-            topToothColliderPaths, botToothColliderPaths
+            root,
+            backRoot,
+            frontRoot,
+            head,
+            eye,
+            topJaw,
+            botJaw,
+            topJawBack,
+            botJawBack,
+            leftColliderPath,
+            rightColliderPath,
+            topTeeth,
+            botTeeth,
+            topToothColliderPaths: [],
+            botToothColliderPaths: []
         };
     }
 
-    applyMouthPose(open) {
-        if (this.mouthFrozen) return;
-        const parts = this.getPenguinParts();
-        if (!parts?.root) return;
-        const setTransform = (el, value) => {
-            if (!el) return;
-            if (value == null) {
-                el.style.removeProperty('transform');
-                return;
-            }
-            el.style.transform = value;
-        };
+    getRigRoots() {
+        return Array.from(this.focusZone?.querySelectorAll?.('.focus-penguin') || []);
+    }
 
-        if (open) {
-            setTransform(parts.head, 'rotate(-10deg)');
-            setTransform(parts.eye, 'rotate(-17deg)');
-            setTransform(parts.topJaw, 'rotate(-17deg)');
-            setTransform(parts.topJawBack, 'rotate(-17deg)');
-            setTransform(parts.botJaw, 'rotate(14deg)');
-            setTransform(parts.botJawBack, 'rotate(14deg)');
+    isTransitioning() {
+        return this.getNowMs() < (this.transitionUntil || 0);
+    }
+
+    isStunned() {
+        return this.getNowMs() < (this.stunUntil || 0);
+    }
+
+    isMouthHeld() {
+        return this.isMouthOpen();
+    }
+
+    getMouthHoldStartTimeMs() {
+        return 0;
+    }
+
+    isMouthOpen() {
+        if (this.mode === 'swallow') return true;
+        if (this.jammed) return true;
+        if (this.isStunned()) return true;
+        return !!this.autoBiteHint || this.getNowMs() < (this.actionUntil || 0);
+    }
+
+    isMouthFullyClosed() {
+        return !this.isMouthOpen();
+    }
+
+    getMode() {
+        return this.mode;
+    }
+
+    setMode(mode) {
+        const nextMode = mode === 'bite' ? 'bite' : 'swallow';
+        if (this.mode === nextMode && !this.isTransitioning()) {
+            this.applyStateClasses();
             return;
         }
+        this.mode = nextMode;
+        this.transitionUntil = this.getNowMs() + this.transitionDurationMs;
+        this.actionUntil = 0;
+        this.actionType = null;
+        this.applyStateClasses();
+    }
 
-        setTransform(parts.head, null);
-        setTransform(parts.eye, null);
-        setTransform(parts.topJaw, null);
-        setTransform(parts.topJawBack, null);
-        setTransform(parts.botJaw, null);
-        setTransform(parts.botJawBack, null);
+    setAutoBiteHint(active) {
+        this.autoBiteHint = !!active;
+        this.applyStateClasses();
+    }
+
+    triggerAction(actionType) {
+        this.actionType = actionType || null;
+        this.actionUntil = this.getNowMs() + 220;
+        this.applyStateClasses();
+    }
+
+    triggerSwallowPulse() {
+        this.swallowPulseActive = true;
+        this.applyStateClasses();
+        if (this._swallowPulseTimeoutId) window.clearTimeout(this._swallowPulseTimeoutId);
+        this._swallowPulseTimeoutId = window.setTimeout(() => {
+            this._swallowPulseTimeoutId = null;
+            this.swallowPulseActive = false;
+            this.applyStateClasses();
+        }, 180);
+    }
+
+    triggerAutoBiteCrunch() {
+        this.biteCrunchActive = true;
+        this.applyStateClasses();
+        if (this._biteCrunchTimeoutId) window.clearTimeout(this._biteCrunchTimeoutId);
+        this._biteCrunchTimeoutId = window.setTimeout(() => {
+            this._biteCrunchTimeoutId = null;
+            this.biteCrunchActive = false;
+            this.applyStateClasses();
+        }, 260);
+    }
+
+    setStunned(durationMs = 0) {
+        const now = this.getNowMs();
+        const until = now + Math.max(0, durationMs || 0);
+        this.stunUntil = Math.max(this.stunUntil || 0, until);
+        this.applyStateClasses();
+    }
+
+    clearStun() {
+        this.stunUntil = 0;
+        this.applyStateClasses();
+    }
+
+    setHealth(hp, maxHp = this.maxHp) {
+        this.maxHp = Math.max(1, Math.floor(maxHp || 3));
+        this.hp = Math.max(0, Math.min(this.maxHp, Math.floor(hp || 0)));
+        this.applyBrokenTeeth();
+        this.applyStateClasses();
+    }
+
+    applyBrokenTeeth() {
+        const parts = this.getPenguinParts();
+        if (!parts) return;
+        const brokenPairs = Math.max(0, Math.min(3, this.maxHp - this.hp));
+        parts.topTeeth.forEach((tooth, index) => {
+            tooth.classList.toggle('penguin-tooth--broken', index < brokenPairs);
+        });
+        parts.botTeeth.forEach((tooth, index) => {
+            tooth.classList.toggle('penguin-tooth--broken', index < brokenPairs);
+        });
+    }
+
+    triggerTimingTeethHitFx() {
+        const parts = this.getPenguinParts();
+        if (!parts) return;
+        const brokenPairs = Math.max(0, Math.min(3, this.maxHp - this.hp));
+        const topTooth = parts.topTeeth[brokenPairs] || parts.topTeeth[0];
+        const botTooth = parts.botTeeth[brokenPairs] || parts.botTeeth[0];
+        [topTooth, botTooth].forEach((tooth) => tooth?.classList.add('penguin-tooth--hit'));
+        if (this._hitFxTimeoutId) window.clearTimeout(this._hitFxTimeoutId);
+        this._hitFxTimeoutId = window.setTimeout(() => {
+            this._hitFxTimeoutId = null;
+            [topTooth, botTooth].forEach((tooth) => tooth?.classList.remove('penguin-tooth--hit'));
+        }, 260);
+    }
+
+    resetTimingTeethFx() {
+        const parts = this.getPenguinParts();
+        if (!parts) return;
+        [...parts.topTeeth, ...parts.botTeeth].forEach((tooth) => {
+            tooth.classList.remove('penguin-tooth--hit');
+        });
+        if (this._hitFxTimeoutId) {
+            window.clearTimeout(this._hitFxTimeoutId);
+            this._hitFxTimeoutId = null;
+        }
+    }
+
+    freezeMouthInPlace() {
+        this.mouthFrozen = true;
+        this.jammed = true;
+        this.applyStateClasses();
+    }
+
+    setPenguinGameOverState() {
+        this.jammed = true;
+        this.applyStateClasses();
+    }
+
+    stopAllBites() {
+        this.actionUntil = 0;
+        this.actionType = null;
+        this.autoBiteHint = false;
+        this.mouthFrozen = false;
+        this.jammed = false;
+        this.swallowPulseActive = false;
+        this.biteCrunchActive = false;
+        this.clearStun();
+        this.applyStateClasses();
+    }
+
+    resetPenguinState() {
+        this.mode = 'swallow';
+        this.transitionUntil = 0;
+        this.actionUntil = 0;
+        this.actionType = null;
+        this.autoBiteHint = false;
+        this.stunUntil = 0;
+        this.mouthFrozen = false;
+        this.jammed = false;
+        this.swallowPulseActive = false;
+        this.biteCrunchActive = false;
+        this.hp = this.maxHp;
+        this.resetTimingTeethFx();
+        this.applyBrokenTeeth();
+        this.applyStateClasses();
+    }
+
+    applyStateClasses() {
+        const roots = this.getRigRoots();
+        const modeClass = this.mode === 'bite' ? 'penguin--mode-bite' : 'penguin--mode-swallow';
+        const actionClass = this.mode === 'bite' ? 'penguin--action-bite' : 'penguin--action-swallow';
+        const actionActive = this.getNowMs() < (this.actionUntil || 0);
+        const stunned = this.isStunned();
+        const transitioning = this.isTransitioning();
+
+        roots.forEach((root) => {
+            root.classList.toggle('penguin--mode-swallow', modeClass === 'penguin--mode-swallow');
+            root.classList.toggle('penguin--mode-bite', modeClass === 'penguin--mode-bite');
+            root.classList.toggle('penguin--transitioning', transitioning);
+            root.classList.toggle('penguin--action-bite', actionActive && actionClass === 'penguin--action-bite');
+            root.classList.toggle('penguin--action-swallow', actionActive && actionClass === 'penguin--action-swallow');
+            root.classList.toggle('penguin--auto-bite', this.autoBiteHint && this.mode === 'bite' && !stunned);
+            root.classList.toggle('penguin--swallow-pulse', this.swallowPulseActive);
+            root.classList.toggle('penguin--bite-crunch', this.biteCrunchActive);
+            root.classList.toggle('penguin--stunned', stunned);
+            root.classList.toggle('penguin--jammed', this.jammed);
+        });
+
+        if (this.isDebugEnabled?.()) {
+            this.dbgLog?.('penguin-state', {
+                mode: this.mode,
+                transitioning,
+                actionType: this.actionType,
+                actionActive,
+                autoBiteHint: this.autoBiteHint,
+                stunned,
+                hp: this.hp,
+                jammed: this.jammed
+            }, 160);
+        }
     }
 
     getPenguinMouthRightX(containerEl) {
         if (!containerEl) return 0;
         const containerRect = containerEl.getBoundingClientRect();
         const parts = this.getPenguinParts();
-        if (!parts) return 0;
-
-        const botRect = parts.botJaw?.getBoundingClientRect?.() || null;
-        const rootRect = parts.root?.getBoundingClientRect?.() || null;
-        const right = botRect ? botRect.right : (rootRect ? rootRect.right : null);
-        if (right == null) return 0;
-        return (right - containerRect.left);
+        const botRect = parts?.botJaw?.getBoundingClientRect?.();
+        const rootRect = parts?.frontRoot?.getBoundingClientRect?.() || parts?.root?.getBoundingClientRect?.();
+        const right = botRect?.right ?? rootRect?.right;
+        return Number.isFinite(right) ? (right - containerRect.left) : 0;
     }
 
-    stopAllBites() {
-        this.mouthFrozen = false;
+    getInteractionMetrics(containerEl) {
+        if (!containerEl) return null;
+        const containerRect = containerEl.getBoundingClientRect();
         const parts = this.getPenguinParts();
-        if (!parts?.root) return;
-        if (this.mouthCloseSettleTimeoutId) {
-            window.clearTimeout(this.mouthCloseSettleTimeoutId);
-            this.mouthCloseSettleTimeoutId = null;
-        }
-        this.mouthHeld = false;
-        this.mouthHoldStartTimeMs = 0;
-        this.mouthOpen = false;
-        this.mouthFullyClosed = true;
-        this.applyMouthPose(false);
-    }
+        if (!parts?.topJaw || !parts?.botJaw) return null;
 
-    /** Замораживает челюсть в текущей позе (для геймовера по льду на 5-м зубе). */
-    freezeMouthInPlace() {
-        const parts = this.getPenguinParts();
-        if (!parts?.root) return;
-        this.mouthFrozen = true;
-        const freeze = (el) => {
-            if (!el) return;
-            const t = el ? window.getComputedStyle(el).transform : 'none';
-            el.style.transition = 'none';
-            el.style.transform = t || 'none';
+        const topRect = parts.topJaw.getBoundingClientRect();
+        const botRect = parts.botJaw.getBoundingClientRect();
+        const mouthRightX = Math.max(topRect.right, botRect.right) - containerRect.left;
+        const mouthLeftX = Math.min(topRect.left, botRect.left) - containerRect.left;
+        const mouthCenterY = (((topRect.top + topRect.bottom) * 0.5) + ((botRect.top + botRect.bottom) * 0.5)) * 0.5 - containerRect.top;
+        const mouthHeight = Math.max(topRect.bottom, botRect.bottom) - Math.min(topRect.top, botRect.top);
+        const mouthWidth = Math.max(28, mouthRightX - mouthLeftX);
+
+        return {
+            mouthLeftX,
+            mouthRightX,
+            mouthCenterY,
+            mouthHeight,
+            mouthWidth,
+            resolveSwallowX: mouthLeftX + (mouthWidth * 0.8),
+            resolveBiteX: mouthRightX - 18,
+            actionLeftX: mouthLeftX - 170,
+            actionRightX: mouthRightX + 170,
+            autoBiteLeftX: mouthLeftX - 180,
+            autoBiteRightX: mouthRightX + 26
         };
-        freeze(parts.head);
-        freeze(parts.eye);
-        freeze(parts.topJawBack);
-        freeze(parts.topJaw);
-        freeze(parts.botJawBack);
-        freeze(parts.botJaw);
-    }
-
-    setPenguinGameOverState() {
-        // Новый риг головы: пока без отдельной game-over механики.
-        this.stopAllBites();
-    }
-
-    resetPenguinState() {
-        this.stopAllBites();
-        this.resetTimingTeethFx();
-    }
-
-    triggerTimingTeethHitFx() {
-        const parts = this.getPenguinParts();
-        if (!parts?.root) return;
-        const topTeeth = Array.from(parts.topJaw?.querySelectorAll?.('.penguin-tooth') || []).slice(0, 1);
-        const botTeeth = Array.from(parts.botJaw?.querySelectorAll?.('.penguin-tooth') || []).slice(0, 1);
-
-        const runFx = (teeth, configs) => {
-            teeth.forEach((tooth, idx) => {
-                const cfg = configs[idx] || configs[configs.length - 1] || { angleDeg: 0, dyPx: 0, dx: -4 };
-                // Фаза 1: явно фиксируем стартовое состояние.
-                // Иначе браузер может схлопнуть старт/финиш в один кадр и "съесть" анимацию.
-                tooth.style.transition = 'none';
-                tooth.style.transformOrigin = '50% 50%';
-                tooth.style.transform = 'translate(0px, 0px) rotate(0deg) scaleY(1)';
-                tooth.style.opacity = '1';
-
-                requestAnimationFrame(() => {
-                    tooth.style.transition = 'transform 260ms cubic-bezier(0.2, 0.8, 0.2, 1), opacity 260ms ease-out';
-                    tooth.style.transform = `translate(${cfg.dx}px, ${cfg.dyPx}px) rotate(${cfg.angleDeg}deg) scaleY(0.7)`;
-                    tooth.style.opacity = '0';
-                });
-            });
-        };
-
-        runFx(topTeeth, [
-            { angleDeg: -20, dyPx: -10, dx: -4 }
-        ]);
-        runFx(botTeeth, [
-            { angleDeg: -7, dyPx: 8, dx: -4 }
-        ]);
-    }
-
-    resetTimingTeethFx() {
-        const parts = this.getPenguinParts();
-        if (!parts?.root) return;
-        const allTeeth = Array.from(parts.root.querySelectorAll('.penguin-tooth'));
-        allTeeth.forEach((tooth) => {
-            tooth.style.removeProperty('transition');
-            tooth.style.removeProperty('transform');
-            tooth.style.removeProperty('opacity');
-            tooth.style.removeProperty('transform-origin');
-        });
-    }
-
-    setMouthHeld(held) {
-        const parts = this.getPenguinParts();
-        if (!parts?.root) return;
-
-        const nextHeld = !!held;
-        if (nextHeld === !!this.mouthHeld) return;
-
-        this.mouthHeld = nextHeld;
-        const nowMs = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-        if (nextHeld) {
-            if (this.mouthCloseSettleTimeoutId) {
-                window.clearTimeout(this.mouthCloseSettleTimeoutId);
-                this.mouthCloseSettleTimeoutId = null;
-            }
-            this.mouthHoldStartTimeMs = nowMs;
-            this.mouthOpen = true;
-            this.mouthFullyClosed = false;
-            this.applyMouthPose(true);
-        } else {
-            this.mouthOpen = false;
-            this.mouthFullyClosed = false;
-            this.applyMouthPose(false);
-            // Челюсть считается "полностью закрытой" после завершения CSS transition.
-            this.mouthCloseSettleTimeoutId = window.setTimeout(() => {
-                this.mouthCloseSettleTimeoutId = null;
-                if (!this.mouthHeld && !this.mouthOpen) {
-                    this.mouthFullyClosed = true;
-                }
-            }, 120);
-        }
-
-        if (this.isDebugEnabled?.()) {
-            const stage = nextHeld ? 'open' : 'close';
-            requestAnimationFrame(() => this.logMouthTransformSnapshot(`${stage}:raf`));
-            window.setTimeout(() => this.logMouthTransformSnapshot(`${stage}:settled`), 120);
-        }
-    }
-
-    logMouthTransformSnapshot(stage) {
-        if (!this.isDebugEnabled?.()) return;
-        const parts = this.getPenguinParts();
-        if (!parts?.root) return;
-        const tr = (el) => (el ? window.getComputedStyle(el).transform : null);
-        this.dbgLog?.('mouth-transform', {
-            stage,
-            mouthOpen: !!this.mouthOpen,
-            mouthFullyClosed: !!this.mouthFullyClosed,
-            held: !!this.mouthHeld,
-            root: tr(parts.root),
-            head: tr(parts.head),
-            eye: tr(parts.eye),
-            topJaw: tr(parts.topJaw),
-            botJaw: tr(parts.botJaw)
-        }, 0);
     }
 
     startBiteHold() {
-        this.setMouthHeld(true);
+        this.setMode('swallow');
     }
 
     endBiteHold() {
-        this.setMouthHeld(false);
+        this.setMode('bite');
     }
 }

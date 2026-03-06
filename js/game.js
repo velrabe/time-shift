@@ -67,6 +67,10 @@ class Game {
         this.coinRushDurationMs = 5000;
         this.coinRushActive = false;
         this.coinRushEndsAt = 0;
+        this.maxHp = 3;
+        this.hp = this.maxHp;
+        this.currentMode = 'swallow';
+        this.stunUntil = 0;
         
         this.setupEventListeners();
     }
@@ -163,84 +167,9 @@ class Game {
             }
         });
 
-        // Game over по физической коллизии (любой объект касается челюсти при закрытом рте)
-        eventBus.on('PENGUIN_COLLISION', (data) => {
-            this.resetCoinRushStreak();
-            if (this.absorbHitWithShield()) {
-                const circle = data?.circle;
-                if (circle && circle instanceof HTMLElement) {
-                    circle.classList.add('passed', 'consumed');
-                    const img = circle.querySelector('img.food-img');
-                    if (img) img.style.opacity = '0';
-                }
-                this.updateUI();
-                return;
-            }
+        eventBus.on('ITEM_RESOLVED', (data) => {
             if (this.state !== 'RUNNING') return;
-            this.beginDeath({ reason: data?.reason || 'PENGUIN_COLLISION' });
-        });
-
-        // Счёт и streak от реально съеденных объектов
-        eventBus.on('FOOD_EATEN', () => {
-            if (this.state !== 'RUNNING') return;
-            if (this.audio && typeof this.audio.playSwallow === 'function') {
-                this.audio.playSwallow();
-            }
-
-            // +5 очков за съеденную еду
-            this.score = (this.score || 0) + 5;
-
-            // Бонус Coin Income: +N монет за каждые 10 очков
-            const incomeBonus = this.perks?.getCoinIncomeBonusPer10Score?.() || 0;
-            if (incomeBonus > 0 && this.score > 0 && this.score % 10 === 0) {
-                this.perks.addCoins(incomeBonus);
-                this.runCoinsEarned += incomeBonus;
-                this.persistProgressionSoon();
-            }
-
-            // При желании score/streak можно логировать для дебага
-            // console.debug('FOOD_EATEN', kind, this.score, this.perks.streakPoints);
-
-            this.updateUI();
-        });
-
-        eventBus.on('COIN_SWALLOWED', () => {
-            if (this.state !== 'RUNNING') return;
-            if (this.audio && typeof this.audio.playSwallow === 'function') {
-                this.audio.playSwallow();
-            }
-            // Проглоченная монета: обычные очки как за еду, но streak монет обнуляем.
-            this.score = (this.score || 0) + 5;
-            this.resetCoinRushStreak();
-            const incomeBonus = this.perks?.getCoinIncomeBonusPer10Score?.() || 0;
-            if (incomeBonus > 0 && this.score > 0 && this.score % 10 === 0) {
-                this.perks.addCoins(incomeBonus);
-                this.runCoinsEarned += incomeBonus;
-                this.persistProgressionSoon();
-            }
-            this.updateUI();
-        });
-
-        eventBus.on('COIN_BITTEN', (data) => {
-            if (this.state !== 'RUNNING') return;
-            if (this.audio && typeof this.audio.playCoinBite === 'function') {
-                this.audio.playCoinBite();
-            }
-            let amount = 100;
-            if (this.perks?.hasDoubleBite?.()) amount += 100;
-            this.perks.addCoins(amount);
-            this.runCoinsEarned += amount;
-            if (!this.coinRushActive) {
-                this.coinRushProgress = Math.max(0, (this.coinRushProgress || 0) + 1);
-                if (this.coinRushProgress >= (this.coinRushTarget || 10)) {
-                    this.activateCoinRush();
-                }
-            }
-            const x = typeof data?.x === 'number' ? data.x : undefined;
-            const y = typeof data?.y === 'number' ? data.y : undefined;
-            this.renderer?.showFloatingCoinBonus?.(x, y, amount);
-            this.persistProgressionSoon();
-            this.updateUI();
+            this.handleResolvedItem(data);
         });
 
         // Горячие клавиши
@@ -276,27 +205,23 @@ class Game {
                 return;
             }
 
-            if (key === ' ' || key === 'Spacebar') {
-                // Не даём автоповтору клавиши превращать укус в "авто-режим"
-                if (e.repeat) return;
+            if (key === 'w' || key === 'W' || key === 'ArrowUp') {
                 e.preventDefault();
-                // Удержание: открылся рот (дальше закроется по keyup или автозакрытию через 2s)
-                if (this.audio && typeof this.audio.playJawOpen === 'function') {
-                    this.audio.playJawOpen();
-                }
-                this.renderer?.startBiteHold?.();
+                this.setMode('swallow');
                 return;
             }
-        });
 
-        document.addEventListener('keyup', (e) => {
-            const key = e.key;
-            if (key === ' ' || key === 'Spacebar') {
+            if (key === 's' || key === 'S' || key === 'ArrowDown') {
                 e.preventDefault();
-                if (this.audio && typeof this.audio.playJawClose === 'function') {
-                    this.audio.playJawClose();
-                }
-                this.renderer?.endBiteHold?.();
+                this.setMode('bite');
+                return;
+            }
+
+            if (key === 'd' || key === 'D' || key === 'ArrowRight' || key === ' ' || key === 'Spacebar') {
+                if (e.repeat) return;
+                e.preventDefault();
+                this.performAction();
+                return;
             }
         });
 
@@ -443,50 +368,65 @@ class Game {
             });
         }
 
-        const biteBtn = document.getElementById('bite-btn');
-        if (biteBtn) {
-            let holding = false;
-            let holdPointerId = null;
+        const swallowModeBtn = document.getElementById('mode-swallow-btn');
+        if (swallowModeBtn) {
+            swallowModeBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                this.setMode('swallow');
+            });
+        }
 
-            const startHold = (e) => {
-                e?.preventDefault?.();
-                if (this.state !== 'RUNNING') return;
-                if (holding) return;
-                holding = true;
-                holdPointerId = (e && Number.isFinite(e.pointerId)) ? e.pointerId : null;
-                if (holdPointerId != null && typeof biteBtn.setPointerCapture === 'function') {
-                    try { biteBtn.setPointerCapture(holdPointerId); } catch (_err) { /* ignore */ }
-                }
-                if (this.audio && typeof this.audio.playJawOpen === 'function') {
-                    this.audio.playJawOpen();
-                }
-                this.renderer?.startBiteHold?.();
-            };
+        const biteModeBtn = document.getElementById('mode-bite-btn');
+        if (biteModeBtn) {
+            biteModeBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                this.setMode('bite');
+            });
+        }
 
-            const endHold = (e) => {
-                if (!holding) return;
-                const eventPointerId = (e && Number.isFinite(e.pointerId)) ? e.pointerId : null;
-                if (holdPointerId != null && eventPointerId != null && eventPointerId !== holdPointerId) {
+        const actionBtn = document.getElementById('action-btn');
+        if (actionBtn) {
+            actionBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                this.performAction();
+            });
+        }
+
+        const gameArea = document.getElementById('game-area');
+        if (gameArea) {
+            let touchStart = null;
+
+            gameArea.addEventListener('touchstart', (e) => {
+                if (e.target?.closest?.('button, [role="button"]')) return;
+                const touch = e.changedTouches?.[0];
+                if (!touch) return;
+                touchStart = { x: touch.clientX, y: touch.clientY, at: Date.now() };
+            }, { passive: true });
+
+            gameArea.addEventListener('touchend', (e) => {
+                if (!touchStart) return;
+                if (e.target?.closest?.('button, [role="button"]')) {
+                    touchStart = null;
                     return;
                 }
-                e?.preventDefault?.();
-                holding = false;
-                if (holdPointerId != null && typeof biteBtn.releasePointerCapture === 'function') {
-                    try { biteBtn.releasePointerCapture(holdPointerId); } catch (_err) { /* ignore */ }
+                const touch = e.changedTouches?.[0];
+                if (!touch) {
+                    touchStart = null;
+                    return;
                 }
-                holdPointerId = null;
-                if (this.audio && typeof this.audio.playJawClose === 'function') {
-                    this.audio.playJawClose();
-                }
-                this.renderer?.endBiteHold?.();
-            };
+                const dx = touch.clientX - touchStart.x;
+                const dy = touch.clientY - touchStart.y;
+                const absX = Math.abs(dx);
+                const absY = Math.abs(dy);
 
-            // Pointer events (мышь + тач)
-            biteBtn.addEventListener('pointerdown', startHold);
-            biteBtn.addEventListener('pointerup', endHold);
-            biteBtn.addEventListener('pointercancel', endHold);
-            biteBtn.addEventListener('lostpointercapture', endHold);
-            window.addEventListener('blur', endHold);
+                if (absY > 34 && absY > absX * 1.1) {
+                    this.setMode(dy < 0 ? 'swallow' : 'bite');
+                } else if (dx > 34 && absX > absY * 1.1) {
+                    this.performAction();
+                }
+
+                touchStart = null;
+            }, { passive: true });
         }
 
         // Открытие таблицы лидеров по клику на BEST
@@ -682,6 +622,10 @@ class Game {
             this.coinRushTarget = 10;
             this.coinRushActive = false;
             this.coinRushEndsAt = 0;
+            this.hp = this.maxHp;
+            this.currentMode = 'swallow';
+            this.stunUntil = 0;
+            this.syncGameplayPresentation();
             this.updateUI();
 
             this.state = 'COUNTDOWN';
@@ -704,6 +648,7 @@ class Game {
         this._pauseStartTime = null;
         this.lastUpdateTime = performance.now();
         this.lastSnapshotTime = Date.now();
+        this.syncGameplayPresentation();
         this.userInteracted = true; // Помечаем как взаимодействовал (клик на PLAY)
 
         // Сброс состояния смерти для новой сессии
@@ -787,11 +732,126 @@ class Game {
 
         // UI
         this.updateUI();
+        this.renderer?.setStunned?.(this.isStunned() ? Math.max(0, this.stunUntil - Date.now()) : 0);
 
         // Конвейер: позиция ленты обновляется каждый кадр
         if (this.renderer && typeof this.renderer.updateConveyor === 'function') {
             this.renderer.updateConveyor(this.timer);
         }
+    }
+
+    getInteractionState() {
+        return {
+            mode: this.currentMode,
+            hp: this.hp,
+            maxHp: this.maxHp,
+            stunned: this.isStunned(),
+            gameStatus: this.state
+        };
+    }
+
+    isStunned() {
+        return this.state === 'RUNNING' && Date.now() < (this.stunUntil || 0);
+    }
+
+    isInputLocked() {
+        return this.state !== 'RUNNING' || this.isStunned();
+    }
+
+    syncGameplayPresentation() {
+        this.renderer?.setMode?.(this.currentMode);
+        this.renderer?.setHealth?.(this.hp, this.maxHp);
+        this.renderer?.setStunned?.(this.isStunned() ? Math.max(0, this.stunUntil - Date.now()) : 0);
+    }
+
+    setMode(mode) {
+        const nextMode = mode === 'bite' ? 'bite' : 'swallow';
+        if (this.state === 'RUNNING' && this.isStunned()) return false;
+        if (nextMode === this.currentMode) {
+            this.renderer?.setMode?.(nextMode);
+            this.updateUI();
+            return true;
+        }
+        this.currentMode = nextMode;
+        this.renderer?.setMode?.(nextMode);
+        if (this.audio) {
+            if (nextMode === 'swallow' && typeof this.audio.playJawOpen === 'function') {
+                this.audio.playJawOpen();
+            } else if (nextMode === 'bite' && typeof this.audio.playJawClose === 'function') {
+                this.audio.playJawClose();
+            }
+        }
+        this.updateUI();
+        return true;
+    }
+
+    performAction() {
+        if (this.isInputLocked()) return false;
+        const handled = this.renderer?.performAction?.();
+        this.updateUI();
+        return !!handled;
+    }
+
+    applyStun(durationMs = 0) {
+        const extendMs = Math.max(0, Math.floor(durationMs || 0));
+        if (extendMs <= 0) return;
+        this.stunUntil = Math.max(this.stunUntil || 0, Date.now() + extendMs);
+        this.renderer?.setStunned?.(Math.max(0, this.stunUntil - Date.now()));
+    }
+
+    applyDamage(amount = 0) {
+        const damage = Math.max(0, Math.floor(amount || 0));
+        if (damage <= 0) return;
+        this.hp = Math.max(0, this.hp - damage);
+        this.renderer?.setHealth?.(this.hp, this.maxHp);
+        this.renderer?.penguinRig?.triggerTimingTeethHitFx?.();
+    }
+
+    handleResolvedItem(data = {}) {
+        const scoreDelta = Math.max(0, Math.floor(data.scoreDelta || 0));
+        const coinsDelta = Math.max(0, Math.floor(data.coinsDelta || 0));
+        const damage = Math.max(0, Math.floor(data.damage || 0));
+        const stunMs = Math.max(0, Math.floor(data.stunMs || 0));
+
+        if ((data.effect === 'swallow' || data.effect === 'action-swallow') && this.audio?.playSwallow) {
+            this.audio.playSwallow();
+            this.renderer?.penguinRig?.triggerSwallowPulse?.();
+        } else if ((data.effect === 'crush' || data.effect === 'action-chomp') && this.audio?.playJawClose) {
+            this.audio.playJawClose();
+            this.renderer?.penguinRig?.triggerAutoBiteCrunch?.();
+        }
+
+        if (scoreDelta > 0) {
+            this.score += scoreDelta;
+            eventBus.emit('FOOD_EATEN', data);
+            const incomeBonus = this.perks?.getCoinIncomeBonusPer10Score?.() || 0;
+            if (incomeBonus > 0 && this.score > 0 && this.score % 10 === 0) {
+                this.perks.addCoins(incomeBonus);
+                this.runCoinsEarned += incomeBonus;
+                this.persistProgressionSoon();
+            }
+        }
+
+        if (coinsDelta > 0) {
+            this.perks.addCoins(coinsDelta);
+            this.runCoinsEarned += coinsDelta;
+            this.renderer?.showFloatingCoinBonus?.(data.x, data.y, coinsDelta);
+            this.persistProgressionSoon();
+        }
+
+        if (damage > 0) {
+            this.applyDamage(damage);
+        }
+
+        if (stunMs > 0) {
+            this.applyStun(stunMs);
+        }
+
+        if (data.fatal) {
+            this.beginDeath({ reason: data.fatalReason || 'ITEM_FATAL' });
+        }
+
+        this.updateUI();
     }
 
     // Запуск "смерти" с задержкой (чтобы показать анимацию столкновения)
@@ -805,20 +865,19 @@ class Game {
         if (this.state !== 'RUNNING') return;
         this.deathInProgress = true;
         this.state = 'DYING';
-        const isIceTooth5 = meta?.reason === 'ICE_TOOTH5_HIT';
-        const timingJawHit = meta?.reason === 'TIMING_JAW_HIT_TOP' || meta?.reason === 'TIMING_JAW_HIT_BOT';
-        if (this.audio && !isIceTooth5) {
-            if (timingJawHit && typeof this.audio.playJawBroke === 'function') {
+        const jammedDeath = meta?.reason === 'TEETH_JAMMED' || meta?.reason === 'MISSED_CHOMP' || meta?.reason === 'SWALLOW_STUCK';
+        if (this.audio) {
+            if (jammedDeath && typeof this.audio.playJawBroke === 'function') {
                 this.audio.playJawBroke();
-            } else if (!timingJawHit && typeof this.audio.playFrontCrush === 'function') {
+            } else if (typeof this.audio.playFrontCrush === 'function') {
                 this.audio.playFrontCrush();
             }
         }
-        if (timingJawHit) {
+        if (jammedDeath) {
             this.renderer?.penguinRig?.triggerTimingTeethHitFx?.();
         }
         try {
-            if (isIceTooth5) {
+            if (jammedDeath) {
                 this.renderer?.freezeMouthInPlace?.();
                 this.renderer?.pauseBeltUpdate?.();
             } else {
@@ -860,6 +919,12 @@ class Game {
             gameStatus: this.state,
             soundMuted: this.soundMuted,
             leaderboardRank: this._getLeaderboardRankForHUD(),
+            mode: this.currentMode,
+            hp: this.hp,
+            maxHp: this.maxHp,
+            stunned: this.isStunned(),
+            stunRemainingMs: Math.max(0, (this.stunUntil || 0) - now),
+            inputLocked: this.isInputLocked(),
             shieldActive: !!this.shieldActive,
             shieldHitsRemaining: Math.max(0, this.shieldHitsRemaining || 0),
             slowCooldownRemainingMs: Math.max(0, (this.slowCooldownUntil || 0) - now),
@@ -1140,6 +1205,11 @@ class Game {
         // Сброс состояния смерти
         this.deathInProgress = false;
         this.score = 0;
+        this.hp = this.maxHp;
+        this.currentMode = 'swallow';
+        this.stunUntil = 0;
+        this.renderer?.resetStripWindow?.();
+        this.syncGameplayPresentation();
         this.updateUI();
         
         this.hideGameOverOverlay();
@@ -1175,7 +1245,11 @@ class Game {
                 coinRushProgress: this.coinRushProgress || 0,
                 coinRushTarget: this.coinRushTarget || 10,
                 coinRushActive: !!this.coinRushActive,
-                coinRushEndsAt: this.coinRushEndsAt || 0
+                coinRushEndsAt: this.coinRushEndsAt || 0,
+                hp: this.hp || this.maxHp,
+                maxHp: this.maxHp || 3,
+                currentMode: this.currentMode || 'swallow',
+                stunUntil: this.stunUntil || 0
             }
         };
     }
@@ -1219,6 +1293,11 @@ class Game {
         this.coinRushTarget = Math.max(10, Math.floor(run.coinRushTarget || 10));
         this.coinRushActive = !!run.coinRushActive;
         this.coinRushEndsAt = Math.max(0, Math.floor(run.coinRushEndsAt || 0));
+        this.maxHp = Math.max(1, Math.floor(run.maxHp || this.maxHp || 3));
+        this.hp = Math.max(0, Math.min(this.maxHp, Math.floor(run.hp ?? this.maxHp)));
+        this.currentMode = run.currentMode === 'bite' ? 'bite' : 'swallow';
+        this.stunUntil = Math.max(0, Math.floor(run.stunUntil || 0));
+        this.syncGameplayPresentation();
         
         // Обновление best score из снапшота
         if (snapshot.timer && snapshot.timer.maxReached) {
@@ -1561,4 +1640,3 @@ class Game {
         console.log('[DEBUG] Progress has been reset (local + GamePush)');
     }
 }
-

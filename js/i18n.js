@@ -152,16 +152,6 @@
         const langRu = q('#lang-ru span');
         if (langRu) langRu.textContent = dict.LANG_RU;
 
-        // HUD buttons
-        const slowHud = q('#slowdown-btn span:not(.action-hotkey)');
-        if (slowHud) slowHud.textContent = dict.HUD_SLOW;
-        const shieldHud = q('#shield-btn span:not(.action-hotkey)');
-        if (shieldHud) shieldHud.textContent = dict.HUD_SHIELD;
-        const biteLabel = q('#mode-bite-btn .mode-toggle-label');
-        if (biteLabel) biteLabel.textContent = dict.HUD_BITE;
-        const swallowLabel = q('#mode-swallow-btn .mode-toggle-label');
-        if (swallowLabel) swallowLabel.textContent = dict.HUD_SWALLOW;
-
         const bestScoreLabel = q('.score-best-label');
         if (bestScoreLabel && dict.HUD_BEST_SCORE_LABEL) {
             bestScoreLabel.textContent = dict.HUD_BEST_SCORE_LABEL;

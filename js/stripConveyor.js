@@ -446,10 +446,35 @@ class StripConveyorSystem {
         item.holdMs = Math.max(0, resolution.holdMs || 220);
         item.cleanupAt = nowMs + item.holdMs;
         item.el.dataset.processed = 'true';
-        item.el.classList.add('passed', 'consumed', 'item-resolved');
+        item.el.classList.add('passed', 'item-resolved');
         if (resolution.effect) {
             item.el.classList.add(`item-effect--${resolution.effect}`);
         }
+
+        if (resolution.snapCapture) {
+            const fromLeft = Number.isFinite(item.screenLeft) ? item.screenLeft : 0;
+            const fromTop = Number.isFinite(item.screenTop) ? item.screenTop : 0;
+            const toCenterX = Number.isFinite(resolution.snapX) ? resolution.snapX : item.screenCenterX;
+            const toCenterY = Number.isFinite(resolution.snapY) ? resolution.snapY : ((fromTop + (item.height * 0.5)));
+            const toLeft = toCenterX - (item.width * 0.5);
+            const toTop = toCenterY - (item.height * 0.5);
+            const dx = toLeft - fromLeft;
+            const dy = toTop - fromTop;
+            item.el.classList.add('item-snap-captured');
+            item.el.style.willChange = 'transform, opacity, filter';
+            item.el.style.transition = 'transform 90ms ease-out, opacity 120ms ease-out, filter 120ms ease-out';
+            item.el.style.transform = `translate3d(${fromLeft.toFixed(1)}px, ${fromTop.toFixed(1)}px, 0)`;
+            window.requestAnimationFrame(() => {
+                item.el.style.transform = `translate3d(${(fromLeft + dx).toFixed(1)}px, ${(fromTop + dy).toFixed(1)}px, 0)`;
+                item.el.style.filter = 'drop-shadow(0 0 10px rgba(255,255,255,0.55))';
+            });
+            window.setTimeout(() => {
+                item.el.classList.add('consumed');
+            }, Math.max(110, item.holdMs - 120));
+        } else {
+            item.el.classList.add('consumed');
+        }
+
         if (resolution.effect === 'fatal-jam') {
             item.cleanupAt = nowMs + Math.max(900, item.holdMs || 0);
         }

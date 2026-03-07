@@ -572,6 +572,37 @@ body {
     }
 }
 
+.eat-ripple {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: calc(38px * var(--ui-scale));
+    height: calc(38px * var(--ui-scale));
+    border-radius: 999px;
+    border: 2px solid rgba(255, 255, 255, 0.72);
+    background: radial-gradient(circle, rgba(255, 255, 255, 0.42) 0%, rgba(255, 255, 255, 0.08) 58%, rgba(255, 255, 255, 0) 100%);
+    pointer-events: none;
+    z-index: 90;
+    transform: translate(-50%, -50%) scale(0.5);
+    animation: eat-ripple 0.42s ease-out forwards;
+}
+
+.eat-ripple.eat-ripple--ice {
+    border-color: rgba(174, 226, 255, 0.82);
+    background: radial-gradient(circle, rgba(176, 226, 255, 0.35) 0%, rgba(176, 226, 255, 0.08) 58%, rgba(176, 226, 255, 0) 100%);
+}
+
+@keyframes eat-ripple {
+    0% {
+        transform: translate(-50%, -50%) scale(0.5);
+        opacity: 0.72;
+    }
+    100% {
+        transform: translate(-50%, -50%) scale(1.75);
+        opacity: 0;
+    }
+}
+
 .ui-btn {
     background: linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(231, 241, 255, 0.88));
     border: 2px solid rgba(255, 255, 255, 0.60);
@@ -720,6 +751,27 @@ body {
     box-sizing: border-box;
 }
 
+.debug-zone {
+    background: rgba(255, 235, 59, 0.08);
+    border-style: solid;
+}
+
+.debug-zone.debug-zone--action {
+    border-color: rgba(255, 226, 59, 0.95);
+    background: rgba(255, 226, 59, 0.12);
+}
+
+.debug-zone.debug-zone--warning {
+    border-color: rgba(255, 70, 70, 0.95);
+    background: rgba(255, 70, 70, 0.1);
+}
+
+.debug-zone.debug-zone--resolve-swallow,
+.debug-zone.debug-zone--resolve-bite {
+    border-color: rgba(81, 182, 255, 0.95);
+    background: rgba(81, 182, 255, 0.08);
+}
+
 .debug-box.debug-danger {
     border-color: rgba(0, 110, 255, 0.95);
     background: rgba(0, 110, 255, 0.06);
@@ -800,6 +852,46 @@ body {
     transform: scale(var(--food-scale, 1));
     transform-origin: center center;
     filter: none !important;
+    position: relative;
+    z-index: 2;
+}
+
+.number-circle .item-marker {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 68%;
+    height: 68%;
+    transform: translate(-50%, -50%);
+    z-index: 1;
+    pointer-events: none;
+    opacity: 0.42;
+    background: radial-gradient(circle at 32% 28%, rgba(255, 255, 255, 0.78) 0%, rgba(255, 255, 255, 0.18) 65%, rgba(255, 255, 255, 0.08) 100%);
+    box-shadow:
+        inset 0 0 0 1px rgba(255, 255, 255, 0.44),
+        0 3px 14px rgba(84, 109, 138, 0.24);
+}
+
+.number-circle .item-marker--circle {
+    border-radius: 999px;
+}
+
+.number-circle .item-marker--square {
+    border-radius: 12%;
+}
+
+.number-circle.item-kind--big .item-marker {
+    width: 82%;
+    height: 82%;
+}
+
+.number-circle.item-kind--ice .item-marker {
+    opacity: 0.5;
+    background: linear-gradient(160deg, rgba(214, 242, 255, 0.95) 0%, rgba(162, 215, 255, 0.55) 52%, rgba(133, 193, 255, 0.35) 100%);
+}
+
+.number-circle.is-warning {
+    --food-scale: 1.05;
 }
 
 /* Красные цифры для объектов, которые триггерят game over */
@@ -837,6 +929,10 @@ body {
 /* Успешно "съедено": слот остаётся (для стабильного шага ленты), но спрайт исчезает */
 .number-circle.consumed {
     opacity: 0;
+}
+
+.number-circle.item-snap-captured {
+    z-index: 40;
 }
 
 .number-circle.active {
@@ -1046,7 +1142,7 @@ body {
     flex-direction: row;
     align-items: center;
     justify-content: center;
-    gap: calc(32px * var(--ui-scale));
+    gap: calc(14px * var(--ui-scale));
 }
 
 /* Action button wrappers */
@@ -1054,143 +1150,87 @@ body {
     position: relative;
 }
 
-/* Bite button */
-.action-btn--bite {
+.action-btn--switch,
+.action-btn--action {
     padding: calc(8px * var(--ui-scale));
     background: #ffffff;
-    border-radius: calc(40px * var(--ui-scale));
+    border-radius: 999px;
 }
 
-.action-bite-btn {
+.action-round-btn {
     display: flex;
-    flex-direction: row;
     align-items: center;
-    gap: calc(32px * var(--ui-scale));
-    padding: calc(32px * var(--ui-scale)) calc(64px * var(--ui-scale));
+    justify-content: center;
+    width: calc(124px * var(--ui-scale));
+    height: calc(124px * var(--ui-scale));
+    padding: 0;
     border: none;
-    border-radius: calc(32px * var(--ui-scale));
-    background: linear-gradient(180deg, #FFB12D 0%, #FF8726 100%);
+    border-radius: 999px;
     box-shadow:
         inset 0 0 0 1px rgba(255, 255, 255, 0.3),
-        0 calc(4px * var(--ui-scale)) calc(64px * var(--ui-scale)) #E78037;
+        0 calc(4px * var(--ui-scale)) calc(40px * var(--ui-scale)) rgba(121, 176, 245, 0.45);
     cursor: pointer;
-    font-family: "Rubik", sans-serif;
-    font-weight: 700;
-    font-size: calc(60px * var(--ui-scale));
-    line-height: 100%;
-    color: #ffffff;
-    text-transform: uppercase;
-    transition: filter 0.12s ease, transform 0.12s ease;
+    transition: filter 0.12s ease, transform 0.12s ease, box-shadow 0.18s ease, opacity 0.18s ease;
     touch-action: none;
 }
 
-.action-bite-btn:hover {
+.action-round-btn img {
+    width: calc(58px * var(--ui-scale));
+    height: calc(58px * var(--ui-scale));
+    filter: drop-shadow(0 0 10px rgba(255, 255, 255, 0.34));
+}
+
+.action-round-btn:hover:not(:disabled) {
     filter: brightness(1.05);
     transform: translateY(-1px);
 }
 
-.action-bite-btn:active {
+.action-round-btn:active:not(:disabled) {
     transform: translateY(0);
 }
 
-.action-bite-label {
-    line-height: 100%;
-}
-
-.action-bite-btn .action-hotkey {
-    padding: calc(12px * var(--ui-scale));
-    border-radius: 999px;
-    background: rgba(255, 255, 255, 0.1);
-    font-size: calc(24px * var(--ui-scale));
-    font-weight: 700;
-    line-height: 100%;
-}
-
-/* Spell buttons (Slow, Shield) */
-.action-btn--spell {
-    padding: calc(8px * var(--ui-scale));
-    background: #ffffff;
-    border-radius: calc(32px * var(--ui-scale));
-    position: relative;
-}
-
-.action-spell-btn {
-    display: flex;
-    flex-direction: row;
-    align-items: center;
-    gap: calc(16px * var(--ui-scale));
-    padding: calc(24px * var(--ui-scale));
-    border: none;
-    border-radius: calc(24px * var(--ui-scale));
-    background: linear-gradient(180deg, #75B3FF 0%, #4A9AFF 100%);
-    box-shadow:
-        inset 0 0 0 1px rgba(255, 255, 255, 0.3),
-        0 calc(4px * var(--ui-scale)) calc(64px * var(--ui-scale)) #79B0F5;
-    cursor: pointer;
-    font-family: "Rubik", sans-serif;
-    font-weight: 800;
-    font-size: calc(24px * var(--ui-scale));
-    line-height: 100%;
-    color: #ffffff;
-    text-transform: uppercase;
-    transition: filter 0.12s ease, transform 0.12s ease;
-    touch-action: manipulation;
-}
-
-.action-spell-btn:hover:not(:disabled) {
-    filter: brightness(1.05);
-    transform: translateY(-1px);
-}
-
-.action-spell-btn:active:not(:disabled) {
-    transform: translateY(0);
-}
-
-.action-spell-btn:disabled {
-    opacity: 0.35;
+.action-round-btn:disabled {
+    opacity: 0.45;
     cursor: not-allowed;
 }
 
-.action-spell-btn img {
-    width: calc(48px * var(--ui-scale));
-    height: calc(48px * var(--ui-scale));
+.action-round-btn--switch {
+    background: linear-gradient(180deg, #7dbbff 0%, #2f84ff 100%);
 }
 
-.action-spell-btn .action-hotkey {
-    padding: calc(8px * var(--ui-scale));
-    border-radius: 999px;
-    background: rgba(255, 255, 255, 0.1);
-    font-size: calc(16px * var(--ui-scale));
-    font-weight: 700;
-    line-height: 100%;
+.action-round-btn--switch.is-active {
+    box-shadow:
+        inset 0 0 0 1px rgba(255, 255, 255, 0.35),
+        0 calc(4px * var(--ui-scale)) calc(52px * var(--ui-scale)) rgba(71, 151, 255, 0.95),
+        0 0 calc(22px * var(--ui-scale)) rgba(95, 180, 255, 0.85);
 }
 
-.action-spell-btn.ready {
-    background: linear-gradient(180deg, #7dbbff 0%, #2a7cff 100%);
+.action-round-btn--switch:not(.is-active) {
+    background: linear-gradient(180deg, #8fa6bc 0%, #6b8298 100%);
+    box-shadow:
+        inset 0 0 0 1px rgba(255, 255, 255, 0.22),
+        0 calc(3px * var(--ui-scale)) calc(28px * var(--ui-scale)) rgba(76, 100, 124, 0.45);
+    opacity: 0.86;
 }
 
-/* Depleted state (0 spells) */
-.action-btn--spell.depleted .action-spell-btn {
-    opacity: 0.5;
+.action-round-btn--switch:not(.is-active) img {
+    opacity: 0.72;
+    filter: none;
 }
 
-.action-btn--spell.depleted .action-spell-count {
-    background: linear-gradient(180deg, #9AACF9 0%, #79B0F5 100%);
+.action-round-btn--action {
+    background: linear-gradient(180deg, #ffb12d 0%, #ff8726 100%);
+    box-shadow:
+        inset 0 0 0 1px rgba(255, 255, 255, 0.3),
+        0 calc(4px * var(--ui-scale)) calc(52px * var(--ui-scale)) rgba(231, 128, 55, 0.85);
 }
 
-/* Spell count badge: bottom = 0 - height + 8px, so badge overlaps wrapper by 8px */
-.action-spell-count {
-    position: absolute;
-    left: 50%;
-    transform: translate(-50%);
-    padding: calc(8px * var(--ui-scale));
-    border-radius: 0 0 calc(8px * var(--ui-scale)) calc(8px * var(--ui-scale));
-    background: linear-gradient(180deg, #FFB12D 0%, #FF8726 100%);
-    font-family: "Rubik", sans-serif;
-    font-weight: 700;
-    font-size: calc(16px * var(--ui-scale));
-    color: #ffffff;
-    line-height: 100%;
+.action-round-btn--action.is-success {
+    box-shadow:
+        inset 0 0 0 1px rgba(255, 255, 255, 0.45),
+        0 calc(4px * var(--ui-scale)) calc(52px * var(--ui-scale)) rgba(231, 128, 55, 0.95),
+        0 0 calc(26px * var(--ui-scale)) rgba(255, 194, 101, 0.9);
+    filter: brightness(1.12);
 }
 
 /* Overlay Screens: фон пропускает клики к HUD (лидерборд, перки, пауза) */
@@ -2408,27 +2448,17 @@ body {
 
     #control-buttons {
         width: 100%;
-        display: grid;
-        grid-template-columns: auto auto 1fr auto;
-        grid-template-areas:
-            "slow shield . bite";
+        display: flex;
+        justify-content: space-between;
         align-items: end;
-        column-gap: calc(12px * var(--ui-scale));
-        row-gap: 0;
+        column-gap: calc(10px * var(--ui-scale));
     }
 
-    #slow-btn-wrap {
-        grid-area: slow;
+    .action-btn--switch {
         justify-self: start;
     }
 
-    #shield-btn-wrap {
-        grid-area: shield;
-        justify-self: start;
-    }
-
-    .action-btn--bite {
-        grid-area: bite;
+    .action-btn--action {
         justify-self: end;
         align-self: end;
     }

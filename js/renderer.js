@@ -42,6 +42,7 @@ class Renderer {
             getItems: () => this.stripConveyor.getActiveItems(),
             getInteractionMetrics: (container) => this.penguinRig.getInteractionMetrics(container),
             getGameplayState: () => window.gameInstance?.getInteractionState?.() || null,
+            getBeltSpeedPxPerSec: () => this.stripConveyor?.lastKnownSpeedPxPerSec || 220,
             resolveItem: (item, resolution) => this.stripConveyor.resolveItem(item, resolution),
             setAutoBiteHint: (active) => this.penguinRig.setAutoBiteHint(active),
             triggerTeethHitFx: () => this.penguinRig.triggerTimingTeethHitFx(),
@@ -424,11 +425,11 @@ class Renderer {
             circleEl.appendChild(img);
         }
 
-        let badge = circleEl.querySelector('.item-badge');
-        if (!badge) {
-            badge = document.createElement('span');
-            badge.className = 'item-badge';
-            circleEl.appendChild(badge);
+        let marker = circleEl.querySelector('.item-marker');
+        if (!marker) {
+            marker = document.createElement('span');
+            marker.className = 'item-marker';
+            circleEl.appendChild(marker);
         }
 
         const kind = circleEl.dataset.itemKind || 'edible';
@@ -449,13 +450,13 @@ class Renderer {
         this.setImageSrcIfChanged(img, this.getFoodSrc(base));
         this.setFoodPlaceholderSize(circleEl, img);
 
-        circleEl.classList.toggle('item-kind--big', kind === 'big-edible');
-        circleEl.classList.toggle('item-kind--reward', kind === 'reinforced-ice');
-        circleEl.classList.toggle('item-kind--hard', kind === 'hard-obstacle');
-        badge.textContent = kind === 'reinforced-ice'
-            ? '+5'
-            : (kind === 'big-edible' ? 'MEGA' : (kind === 'hard-obstacle' ? 'HARD' : ''));
-        badge.classList.toggle('hidden', !badge.textContent);
+        const isIceKind = kind === 'ice' || kind === 'reinforced-ice' || kind === 'hard-obstacle';
+        const isBigKind = kind === 'big-edible' || kind === 'reinforced-ice' || kind === 'hard-obstacle';
+        circleEl.classList.toggle('item-kind--ice', isIceKind);
+        circleEl.classList.toggle('item-kind--food', !isIceKind);
+        circleEl.classList.toggle('item-kind--big', isBigKind);
+        marker.classList.toggle('item-marker--square', isIceKind);
+        marker.classList.toggle('item-marker--circle', !isIceKind);
 
         if (img.complete && img.naturalWidth > 0) {
             this.updateFoodContainerSize(circleEl, img);
@@ -582,6 +583,7 @@ class Renderer {
             dangerPolyEl: ensurePoly('debug-danger-poly', { fill: 'rgba(0,150,255,0.08)', stroke: 'rgba(0,150,255,0.9)' }),
             resolveSwallowZoneBox: ensure('debug-resolve-swallow-zone', 'debug-box debug-zone debug-zone--resolve-swallow'),
             resolveBiteZoneBox: ensure('debug-resolve-bite-zone', 'debug-box debug-zone debug-zone--resolve-bite'),
+            warningZoneBox: ensure('debug-warning-zone', 'debug-box debug-zone debug-zone--warning'),
             actionZoneBox: ensure('debug-action-zone', 'debug-box debug-zone debug-zone--action'),
             autoBiteZoneBox: ensure('debug-auto-zone', 'debug-box debug-zone debug-zone--auto'),
             jawTopBox: ensure('debug-jaw-top-box', 'debug-box debug-jaw-top'),
@@ -614,6 +616,7 @@ class Renderer {
 
         placeZone(this.debugEls.resolveSwallowZoneBox, metrics.resolveSwallowX - 3, metrics.resolveSwallowX + 3);
         placeZone(this.debugEls.resolveBiteZoneBox, metrics.resolveBiteX - 3, metrics.resolveBiteX + 3);
+        placeZone(this.debugEls.warningZoneBox, metrics.warningLeftX, metrics.warningRightX);
         placeZone(this.debugEls.actionZoneBox, metrics.actionLeftX, metrics.actionRightX);
         placeZone(this.debugEls.autoBiteZoneBox, metrics.autoBiteLeftX, metrics.autoBiteRightX);
     }
@@ -923,7 +926,7 @@ class Renderer {
     }
 
     performAction() {
-        this.penguinRig.triggerAction(this.penguinRig.getMode() === 'bite' ? 'chomp' : 'mega-swallow');
+        this.penguinRig.triggerAction(this.penguinRig.getMode() === 'bite' ? 'action-bite' : 'action-swallow');
         return this.collisionEngine.handleAction(this.focusZone);
     }
 
@@ -970,6 +973,30 @@ class Renderer {
         window.setTimeout(() => {
             try { el.remove(); } catch (e) { /* ignore */ }
         }, 850);
+    }
+
+    showEatRipple(x, y, kind = 'food') {
+        const container = document.getElementById('game-area');
+        if (!container) return;
+        const el = document.createElement('div');
+        const isIce = kind === 'ice' || kind === 'reinforced-ice' || kind === 'hard-obstacle';
+        el.className = `eat-ripple${isIce ? ' eat-ripple--ice' : ''}`;
+        if (typeof x === 'number' && typeof y === 'number') {
+            const gameRect = container.getBoundingClientRect();
+            const focusRect = this.focusZone?.getBoundingClientRect?.();
+            const offsetX = focusRect ? (focusRect.left - gameRect.left) : 0;
+            const offsetY = focusRect ? (focusRect.top - gameRect.top) : 0;
+            el.style.left = `${x + offsetX}px`;
+            el.style.top = `${y + offsetY}px`;
+        } else {
+            const rect = container.getBoundingClientRect();
+            el.style.left = `${rect.width * 0.34}px`;
+            el.style.top = `${rect.height * 0.54}px`;
+        }
+        container.appendChild(el);
+        window.setTimeout(() => {
+            try { el.remove(); } catch (e) { /* ignore */ }
+        }, 420);
     }
 
     // ========== АНИМАЦИЯ КРУГА (независимая) ==========

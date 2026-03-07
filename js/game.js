@@ -67,7 +67,7 @@ class Game {
         this.coinRushDurationMs = 5000;
         this.coinRushActive = false;
         this.coinRushEndsAt = 0;
-        this.maxHp = 3;
+        this.maxHp = 4;
         this.hp = this.maxHp;
         this.currentMode = 'swallow';
         this.stunUntil = 0;
@@ -193,15 +193,10 @@ class Game {
 
             if (this.state !== 'RUNNING') return;
 
-            if (key === '1') {
+            if (key === 'Shift') {
+                if (e.repeat) return;
                 e.preventDefault();
-                this.useSlowDown();
-                return;
-            }
-
-            if (key === '2') {
-                e.preventDefault();
-                this.useShield();
+                this.toggleMode();
                 return;
             }
 
@@ -217,7 +212,7 @@ class Game {
                 return;
             }
 
-            if (key === 'd' || key === 'D' || key === 'ArrowRight' || key === ' ' || key === 'Spacebar') {
+            if (key === 'd' || key === 'D' || key === 'ArrowRight' || key === ' ' || key === 'Spacebar' || key === 'Space') {
                 if (e.repeat) return;
                 e.preventDefault();
                 this.performAction();
@@ -344,18 +339,6 @@ class Game {
             });
         });
 
-        const slowDownBtn = document.getElementById('slowdown-btn');
-        if (slowDownBtn) {
-            slowDownBtn.addEventListener('click', () => this.useSlowDown());
-        }
-
-        // Кнопка Coin Rush теперь только визуальный индикатор (активация автоматическая)
-
-        const shieldBtn = document.getElementById('shield-btn');
-        if (shieldBtn) {
-            shieldBtn.addEventListener('click', () => this.useShield());
-        }
-
         const perksBtn = document.getElementById('perks-btn');
         if (perksBtn) {
             const open = (e) => {
@@ -368,19 +351,11 @@ class Game {
             });
         }
 
-        const swallowModeBtn = document.getElementById('mode-swallow-btn');
-        if (swallowModeBtn) {
-            swallowModeBtn.addEventListener('click', (e) => {
+        const modeSwitchBtn = document.getElementById('mode-switch-btn');
+        if (modeSwitchBtn) {
+            modeSwitchBtn.addEventListener('click', (e) => {
                 e.preventDefault();
-                this.setMode('swallow');
-            });
-        }
-
-        const biteModeBtn = document.getElementById('mode-bite-btn');
-        if (biteModeBtn) {
-            biteModeBtn.addEventListener('click', (e) => {
-                e.preventDefault();
-                this.setMode('bite');
+                this.toggleMode();
             });
         }
 
@@ -785,6 +760,10 @@ class Game {
         return true;
     }
 
+    toggleMode() {
+        return this.setMode(this.currentMode === 'swallow' ? 'bite' : 'swallow');
+    }
+
     performAction() {
         if (this.isInputLocked()) return false;
         const handled = this.renderer?.performAction?.();
@@ -802,9 +781,16 @@ class Game {
     applyDamage(amount = 0) {
         const damage = Math.max(0, Math.floor(amount || 0));
         if (damage <= 0) return;
+        const prevHp = this.hp;
         this.hp = Math.max(0, this.hp - damage);
         this.renderer?.setHealth?.(this.hp, this.maxHp);
-        this.renderer?.penguinRig?.triggerTimingTeethHitFx?.();
+        if (this.hp > 0 && this.hp < prevHp) {
+            const fallenPairIndex = Math.max(0, Math.min(2, this.maxHp - this.hp - 1));
+            this.renderer?.penguinRig?.triggerTimingTeethHitFx?.(fallenPairIndex);
+        }
+        if (prevHp > 0 && this.hp <= 0) {
+            this.beginDeath({ reason: 'HP_DEPLETED' });
+        }
     }
 
     handleResolvedItem(data = {}) {
@@ -813,12 +799,19 @@ class Game {
         const damage = Math.max(0, Math.floor(data.damage || 0));
         const stunMs = Math.max(0, Math.floor(data.stunMs || 0));
 
-        if ((data.effect === 'swallow' || data.effect === 'action-swallow') && this.audio?.playSwallow) {
+        if ((data.effect === 'swallow' || data.effect === 'action-swallow' || data.effect === 'swallow-heavy') && this.audio?.playSwallow) {
             this.audio.playSwallow();
             this.renderer?.penguinRig?.triggerSwallowPulse?.();
-        } else if ((data.effect === 'crush' || data.effect === 'action-chomp') && this.audio?.playJawClose) {
+        } else if ((data.effect === 'crush' || data.effect === 'action-bite' || data.effect === 'bite-food') && this.audio?.playJawClose) {
             this.audio.playJawClose();
             this.renderer?.penguinRig?.triggerAutoBiteCrunch?.();
+        }
+
+        if (data.actionUsed) {
+            this.renderer?.ui?.triggerActionSuccessFx?.();
+        }
+        if (this.shouldShowEatRipple(data)) {
+            this.renderer?.showEatRipple?.(data.x, data.y, data.itemKind);
         }
 
         if (scoreDelta > 0) {
@@ -852,6 +845,14 @@ class Game {
         }
 
         this.updateUI();
+    }
+
+    shouldShowEatRipple(data = {}) {
+        if (data.fatal) return false;
+        const effect = String(data.effect || '');
+        if (effect === 'swallow' || effect === 'swallow-heavy' || effect === 'action-swallow') return true;
+        if (effect === 'crush' || effect === 'bite-food' || effect === 'action-bite' || effect === 'bite-coin') return true;
+        return false;
     }
 
     // Запуск "смерти" с задержкой (чтобы показать анимацию столкновения)
@@ -1247,7 +1248,7 @@ class Game {
                 coinRushActive: !!this.coinRushActive,
                 coinRushEndsAt: this.coinRushEndsAt || 0,
                 hp: this.hp || this.maxHp,
-                maxHp: this.maxHp || 3,
+                maxHp: this.maxHp || 4,
                 currentMode: this.currentMode || 'swallow',
                 stunUntil: this.stunUntil || 0
             }
@@ -1293,7 +1294,7 @@ class Game {
         this.coinRushTarget = Math.max(10, Math.floor(run.coinRushTarget || 10));
         this.coinRushActive = !!run.coinRushActive;
         this.coinRushEndsAt = Math.max(0, Math.floor(run.coinRushEndsAt || 0));
-        this.maxHp = Math.max(1, Math.floor(run.maxHp || this.maxHp || 3));
+        this.maxHp = Math.max(1, Math.floor(run.maxHp || this.maxHp || 4));
         this.hp = Math.max(0, Math.min(this.maxHp, Math.floor(run.hp ?? this.maxHp)));
         this.currentMode = run.currentMode === 'bite' ? 'bite' : 'swallow';
         this.stunUntil = Math.max(0, Math.floor(run.stunUntil || 0));

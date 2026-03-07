@@ -17,6 +17,7 @@ class RendererUI {
         this.perksCloseBtn = document.getElementById('perks-close-btn');
         this._perksBoundClose = null;
         this._perksBoundUpgrade = null;
+        this._actionSuccessTimeoutId = null;
     }
 
     updateUI(state) {
@@ -28,20 +29,15 @@ class RendererUI {
         const hpValueEl = document.getElementById('hp-value');
         const statusTextEl = document.getElementById('status-text');
         const actionBtn = document.getElementById('action-btn');
-        const actionBtnLabel = document.getElementById('action-btn-label');
-        const swallowModeBtn = document.getElementById('mode-swallow-btn');
-        const biteModeBtn = document.getElementById('mode-bite-btn');
-        const slowdownBtn = document.getElementById('slowdown-btn');
+        const modeSwitchBtn = document.getElementById('mode-switch-btn');
         const soundBtn = document.getElementById('sound-btn');
 
         const score = Math.floor(state?.score ?? 0);
         const best = Math.floor(state?.bestScore ?? 0);
         const rank = typeof state?.leaderboardRank === 'number' ? state.leaderboardRank : null;
-        const slowCooldownSec = Math.ceil(Math.max(0, state?.slowCooldownRemainingMs || 0) / 1000);
-        const shieldCooldownSec = Math.ceil(Math.max(0, state?.shieldCooldownRemainingMs || 0) / 1000);
         const mode = state?.mode === 'bite' ? 'bite' : 'swallow';
-        const hp = Math.max(0, Math.floor(state?.hp ?? 3));
-        const maxHp = Math.max(1, Math.floor(state?.maxHp ?? 3));
+        const hp = Math.max(0, Math.floor(state?.hp ?? 4));
+        const maxHp = Math.max(1, Math.floor(state?.maxHp ?? 4));
         const stunned = !!state?.stunned;
         const t = (key, fallback) => (window.I18N && typeof window.I18N.t === 'function')
             ? window.I18N.t(key)
@@ -66,60 +62,13 @@ class RendererUI {
                 ? `${t('HUD_STATUS_STUN', 'Stun')} ${Math.max(0, Math.ceil((state?.stunRemainingMs || 0) / 100) / 10).toFixed(1)}s`
                 : (mode === 'bite' ? t('HUD_STATUS_BITE', 'Crush ice, chomp rewards') : t('HUD_STATUS_SWALLOW', 'Swallow food, action big bites'));
         }
-        if (actionBtnLabel) {
-            actionBtnLabel.textContent = mode === 'bite' ? t('HUD_CHOMP', 'CHOMP') : t('HUD_MEGA', 'MEGA');
-        }
         if (actionBtn) {
             const canUseAction = state?.gameStatus === 'RUNNING' && !state?.inputLocked;
             actionBtn.disabled = !canUseAction;
-            actionBtn.classList.toggle('is-swallow', mode === 'swallow');
         }
-        if (swallowModeBtn) {
-            swallowModeBtn.classList.toggle('is-active', mode === 'swallow');
-            swallowModeBtn.disabled = state?.gameStatus !== 'RUNNING' || !!state?.stunned;
-        }
-        if (biteModeBtn) {
-            biteModeBtn.classList.toggle('is-active', mode === 'bite');
-            biteModeBtn.disabled = state?.gameStatus !== 'RUNNING' || !!state?.stunned;
-        }
-
-        const slowSpellCount = Math.max(0, state?.slowSpellCount ?? 1);
-        const shieldSpellCount = Math.max(0, state?.shieldSpellCount ?? 1);
-
-        if (slowdownBtn) {
-            const canUse = state?.gameStatus === 'RUNNING' && slowSpellCount > 0 && slowCooldownSec <= 0;
-            slowdownBtn.disabled = !canUse;
-            slowdownBtn.classList.toggle('ready', canUse);
-            slowdownBtn.title = slowCooldownSec > 0 ? `Slow cooldown: ${slowCooldownSec}s` : 'Slow time';
-        }
-
-        const slowWrap = document.getElementById('slow-btn-wrap');
-        const shieldWrap = document.getElementById('shield-btn-wrap');
-        const shieldBtn = document.getElementById('shield-btn');
-        const slowCountEl = slowWrap?.querySelector('.action-spell-count');
-        const shieldCountEl = shieldWrap?.querySelector('.action-spell-count');
-
-        if (slowWrap) {
-            slowWrap.classList.toggle('depleted', slowSpellCount <= 0);
-        }
-        if (shieldWrap) {
-            shieldWrap.classList.toggle('depleted', shieldSpellCount <= 0);
-        }
-        if (slowCountEl) {
-            slowCountEl.textContent = `x${slowSpellCount}`;
-            slowCountEl.dataset.count = String(slowSpellCount);
-        }
-        if (shieldCountEl) {
-            shieldCountEl.textContent = `x${shieldSpellCount}`;
-            shieldCountEl.dataset.count = String(shieldSpellCount);
-        }
-        if (shieldBtn) {
-            const canUseShield = state?.gameStatus === 'RUNNING' && shieldSpellCount > 0 && !state?.shieldActive && shieldCooldownSec <= 0;
-            shieldBtn.disabled = !canUseShield;
-            shieldBtn.classList.toggle('ready', canUseShield);
-            shieldBtn.title = state?.shieldActive
-                ? `Shield active (${Math.max(0, state?.shieldHitsRemaining || 0)} hit left)`
-                : (shieldCooldownSec > 0 ? `Shield cooldown: ${shieldCooldownSec}s` : 'Shield');
+        if (modeSwitchBtn) {
+            modeSwitchBtn.classList.toggle('is-active', mode === 'swallow');
+            modeSwitchBtn.disabled = state?.gameStatus !== 'RUNNING' || !!state?.stunned;
         }
 
         const perksCoinsEl = document.getElementById('perks-coins-count');
@@ -457,5 +406,18 @@ class RendererUI {
     hideStartScreen() {
         const startScreen = document.getElementById('start-screen');
         if (startScreen) startScreen.classList.add('hidden');
+    }
+
+    triggerActionSuccessFx() {
+        const actionBtn = document.getElementById('action-btn');
+        if (!actionBtn) return;
+        actionBtn.classList.add('is-success');
+        if (this._actionSuccessTimeoutId) {
+            window.clearTimeout(this._actionSuccessTimeoutId);
+        }
+        this._actionSuccessTimeoutId = window.setTimeout(() => {
+            this._actionSuccessTimeoutId = null;
+            actionBtn.classList.remove('is-success');
+        }, 220);
     }
 }

@@ -169,66 +169,26 @@
         <!-- Control Buttons -->
         <div id="controls">
             <div id="control-buttons">
-                <div id="slow-btn-wrap" class="action-btn-wrap action-btn--spell">
+                <div class="action-btn-wrap action-btn--switch">
                     <button
-                        id="slowdown-btn"
-                        class="action-spell-btn perk-btn"
+                        id="mode-switch-btn"
+                        class="action-round-btn action-round-btn--switch is-active"
                         type="button"
-                        disabled
-                        aria-label="Slow time"
-                        title="Slow time"
+                        aria-label="Toggle swallow and bite mode"
+                        title="Toggle mode"
                     >
                         <img src="img/ui/slow.svg" alt="" aria-hidden="true">
-                        <span>SLOW</span>
-                        <span class="action-hotkey">K1</span>
-                    </button>
-                    <div class="action-spell-count" data-count="1">x1</div>
-                </div>
-                <div class="mode-toggle-group" aria-label="Mode selection">
-                    <button
-                        id="mode-swallow-btn"
-                        class="mode-toggle-btn"
-                        type="button"
-                        aria-label="Swallow mode"
-                    >
-                        <span class="mode-toggle-label">SWALLOW</span>
-                        <span class="action-hotkey">W</span>
-                    </button>
-                    <button
-                        id="mode-bite-btn"
-                        class="mode-toggle-btn"
-                        type="button"
-                        aria-label="Bite mode"
-                    >
-                        <span class="mode-toggle-label">BITE</span>
-                        <span class="action-hotkey">S</span>
                     </button>
                 </div>
-                <div class="action-btn-wrap action-btn--bite">
+                <div class="action-btn-wrap action-btn--action">
                     <button
                         id="action-btn"
-                        class="action-bite-btn"
+                        class="action-round-btn action-round-btn--action"
                         type="button"
                         aria-label="Action"
                     >
-                        <span id="action-btn-label" class="action-bite-label">CHOMP</span>
-                        <span class="action-hotkey">D / SPACE</span>
+                        <img src="img/ui/slow.svg" alt="" aria-hidden="true">
                     </button>
-                </div>
-                <div id="shield-btn-wrap" class="action-btn-wrap action-btn--spell">
-                    <button
-                        id="shield-btn"
-                        class="action-spell-btn"
-                        type="button"
-                        disabled
-                        aria-label="Shield"
-                        title="Shield"
-                    >
-                        <img src="img/ui/shield.svg" alt="" aria-hidden="true">
-                        <span>SHIELD</span>
-                        <span class="action-hotkey">K2</span>
-                    </button>
-                    <div class="action-spell-count" data-count="1">x1</div>
                 </div>
             </div>
         </div>

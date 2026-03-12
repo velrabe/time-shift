@@ -1,14 +1,6 @@
-// Система рендеринга
+// Pixi-backed gameplay renderer facade
 class Renderer {
     constructor() {
-        this.numberStrip = document.getElementById('number-strip');
-        this.focusZone = document.getElementById('focus-zone');
-        
-        // Состояние анимаций (разделены для независимой работы)
-        this.circleAnimationId = null; // ID анимации круга
-        this.stripAnimationId = null;   // ID анимации ленты
-
-        // Debug overlay
         this.debug = (() => {
             try {
                 const qs = new URLSearchParams(window.location.search);
@@ -17,926 +9,130 @@ class Renderer {
                 return false;
             }
         })();
-        this.debugEls = null;
-        // фиксируем "статический" якорь рта, чтобы лента не следовала за transform-анимацией укуса
-        this._cachedMouthRightX = 0;
-        
-        this._mouthHoldMaxMs = 2000;
-        
-        // Набор "баз" для еды на ленте (используем только реальные ассеты из img/food).
-        this.foodBases = ['f1', 'f2', 'f3'];
-        // Кэш данных коллайдера из масок SVG (viewBox + path d).
-        this._foodColliderCache = {};
-        // In-flight fetch cache: убирает дубликаты тяжелых запросов к одним и тем же SVG.
-        this._foodColliderPromiseCache = {};
 
-        this.stripConveyor = new StripConveyorSystem({
-            numberStrip: this.numberStrip,
-            getGameArea: () => this.focusZone,
-            getFocusAnchorX: (container) => this.getFocusAnchorX(container),
-            ensureFoodCircle: (circleEl) => this.ensureFoodCircle(circleEl),
-            applyDebugLabelToCircle: (circleEl) => this.applyDebugLabelToCircle(circleEl),
-            checkCollisionsAndAutoBite: (container) => this.checkCollisionsAndAutoBite(container)
+        this.circleAnimationId = null;
+        this.stripAnimationId = null;
+        this.ui = new RendererUI();
+        this.stage = new PixiGameplayStage({
+            mount: document.getElementById('pixi-stage'),
+            onToggleMode: () => window.gameInstance?.toggleMode?.(),
+            onAction: () => window.gameInstance?.performAction?.(),
+            debug: this.debug
         });
+        this.stripConveyor = this.stage?.conveyor || null;
+        this.penguinRig = this.stage?.penguinRig || null;
         this.collisionEngine = new CollisionEngine({
-            getItems: () => this.stripConveyor.getActiveItems(),
-            getInteractionMetrics: (container) => this.penguinRig.getInteractionMetrics(container),
+            getItems: () => this.stripConveyor?.getActiveItems?.() || [],
+            getInteractionMetrics: () => this.penguinRig?.getInteractionMetrics?.() || null,
             getGameplayState: () => window.gameInstance?.getInteractionState?.() || null,
             getBeltSpeedPxPerSec: () => this.stripConveyor?.lastKnownSpeedPxPerSec || 220,
-            resolveItem: (item, resolution) => this.stripConveyor.resolveItem(item, resolution),
-            setAutoBiteHint: (active) => this.penguinRig.setAutoBiteHint(active),
-            triggerTeethHitFx: () => this.penguinRig.triggerTimingTeethHitFx(),
+            resolveItem: (item, resolution) => this.stripConveyor?.resolveItem?.(item, resolution),
+            setAutoBiteHint: (active) => this.penguinRig?.setAutoBiteHint?.(active),
+            triggerTeethHitFx: () => this.penguinRig?.triggerTimingTeethHitFx?.(),
             emitEvent: (eventName, payload) => {
                 if (typeof eventBus !== 'undefined' && eventBus?.emit) {
                     eventBus.emit(eventName, payload);
                 }
             }
         });
-        this.penguinRig = new PenguinRig({
-            focusZone: this.focusZone,
-            getGameArea: () => this.focusZone,
-            isDebugEnabled: () => !!this._dbg?.enabled,
-            dbgLog: (key, payload, minIntervalMs) => this.dbgLog(key, payload, minIntervalMs)
-        });
-        this.ui = new RendererUI();
-        this.cloudsBackground = new CloudsBackground({
-            getContainer: () => document.getElementById('clouds-container')
-        });
-        // Совместимость с существующим кодом Game, который читает эти поля напрямую.
+        if (this.stage) {
+            this.stage.onCheckCollisions = () => this.checkCollisionsAndAutoBite();
+        }
+
         this.leaderboardModal = this.ui.leaderboardModal;
         this.leaderboardListEl = this.ui.leaderboardListEl;
         this.leaderboardMeEl = this.ui.leaderboardMeEl;
         this.leaderboardCloseBtn = this.ui.leaderboardCloseBtn;
-        
-        this.setupFocusZone();
+
         this.setupEventListeners();
-        // Важно: jaw-геометрию держим в CSS как стабильный "риг",
-        // чтобы замена head SVG не ломала масштаб/позиции конструкции.
-        this.setupDebugOverlay();
-        this.setupClouds();
-
-        // Ограниченные debug-логи (без спама каждый кадр)
-        this._dbg = {
-            enabled: this.debug,
-            max: 40,
-            count: 0,
-            lastAtByKey: new Map(),
-            lastTrackedValue: null,
-            lastTrackedWasColliding: false
-        };
-
-        // Debug-only reset button (полный сброс прогресса)
-        if (this.debug) {
-            try {
-                const hudActions = document.getElementById('hud-actions');
-                if (hudActions) {
-                    const btn = document.createElement('button');
-                    btn.type = 'button';
-                    btn.className = 'icon-btn';
-                    btn.textContent = 'RST';
-                    btn.title = 'Reset local & GamePush progress (debug)';
-                    btn.addEventListener('click', (e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        if (window.gameInstance && typeof window.gameInstance.debugResetProgress === 'function') {
-                            window.gameInstance.debugResetProgress();
-                        }
-                    });
-                    hudActions.appendChild(btn);
-                }
-            } catch (e) {
-                // ignore
-            }
-        }
+        this.setupDebugResetButton();
     }
 
-    dbgLog(key, payload, minIntervalMs = 250) {
-        if (!this._dbg?.enabled) return;
-        if (this._dbg.count >= this._dbg.max) return;
-        const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-        const lastAt = this._dbg.lastAtByKey.get(key) || 0;
-        if (now - lastAt < minIntervalMs) return;
-        this._dbg.lastAtByKey.set(key, now);
-        this._dbg.count += 1;
-        // eslint-disable-next-line no-console
-        console.log(`[DBG:${key}]`, payload);
-    }
-
-    // Анимация "успешного поедания": предмет плавно улетает в рот и растворяется
-    animateEatIntoMouth(circleEl, containerEl, containerRect, targetX, targetY) {
-        if (!circleEl || !containerEl || !containerRect) return;
-        const imgEl = circleEl.querySelector?.('img.food-img');
-        if (!imgEl) return;
-        const imgRect = imgEl.getBoundingClientRect?.();
-        if (!imgRect) return;
-
-        // Получаем левую границу нижней челюсти как точку "поглощения"
-        const parts = this.getPenguinParts();
-        const jawBotRect = parts?.botJaw?.getBoundingClientRect?.();
-        if (!jawBotRect) return;
-        const jawLeftX = jawBotRect.left - containerRect.left;
-
-        const startLeft = imgRect.left - containerRect.left;
-        const startTop = imgRect.top - containerRect.top;
-        const w = imgRect.width;
-        const h = imgRect.height;
-        const startCx = startLeft + w / 2;
-        const startCy = startTop + h / 2;
-
-        // Клонируем картинку в root пингвина, чтобы она рисовалась
-        // между головой (z=1) и челюстями (z=3).
-        const penguinRoot = parts?.root || null;
-        const penguinRootRect = penguinRoot?.getBoundingClientRect?.() || null;
-        if (!penguinRoot || !penguinRootRect) return;
-
-        const rootLeft = penguinRootRect.left - containerRect.left;
-        const rootTop = penguinRootRect.top - containerRect.top;
-        const localStartLeft = startLeft - rootLeft;
-        const localStartTop = startTop - rootTop;
-
-        const fx = document.createElement('img');
-        fx.src = imgEl.currentSrc || imgEl.src;
-        fx.alt = '';
-        fx.draggable = false;
-        fx.style.position = 'absolute';
-        fx.style.left = `${localStartLeft}px`;
-        fx.style.top = `${localStartTop}px`;
-        fx.style.width = `${w}px`;
-        fx.style.height = `${h}px`;
-        fx.style.pointerEvents = 'none';
-        fx.style.zIndex = '2'; // между головой (1) и челюстями (3)
-        fx.style.willChange = 'transform, opacity, filter';
-        fx.style.transformOrigin = '50% 50%';
-        fx.style.transform = 'translate(0px, 0px) scale(1)';
-        fx.style.opacity = '1';
-        fx.style.filter = 'none';
-        fx.style.transition = 'transform 260ms cubic-bezier(0.2, 0.75, 0.3, 0.95), opacity 260ms ease-in, filter 260ms ease-in';
-
-        penguinRoot.appendChild(fx);
-
-        // Прячем оригинал, но оставляем слот (важно для стабильного шага ленты)
-        imgEl.style.opacity = '0';
-        circleEl.classList.add('passed', 'consumed');
-
-        requestAnimationFrame(() => {
-            // Короткое "погружение" в рот с гарантированным движением влево:
-            // предмет не должен застывать по X и не должен улетать вглубь головы.
-            const jawRightX = jawBotRect.right - containerRect.left;
-            const jawWidth = Math.max(1, jawRightX - jawLeftX);
-            const mouthEntryX = Number.isFinite(targetX) ? targetX : (jawRightX - 20);
-            const mouthEntryY = Number.isFinite(targetY)
-                ? targetY
-                : (((jawBotRect.top + jawBotRect.bottom) / 2) - containerRect.top);
-
-            const desiredCx = mouthEntryX - Math.max(4, w * 0.08);
-            const minDivePx = Math.max(10, Math.min(18, w * 0.30)); // минимум сдвига по X влево
-            const maxDivePx = Math.max(minDivePx + 8, Math.min(jawWidth * 0.42, w * 0.70)); // максимум, чтобы не улетал глубоко
-            // Диапазон допустимого finalCx: [startCx-maxDivePx, startCx-minDivePx]
-            const maxLeftTarget = startCx - minDivePx;
-            const minLeftTarget = startCx - maxDivePx;
-            const finalCx = Math.max(minLeftTarget, Math.min(maxLeftTarget, desiredCx));
-
-            const finalCy = startCy + ((mouthEntryY - startCy) * 0.55);
-            const finalDx = finalCx - startCx;
-            const finalDy = finalCy - startCy;
-
-            // Убираем уменьшение объекта при «погружении» в рот: оставляем масштаб 1
-            fx.style.transform = `translate(${finalDx.toFixed(2)}px, ${finalDy.toFixed(2)}px) scale(1)`;
-            fx.style.opacity = '0';
-            fx.style.filter = 'blur(0.6px)';
-        });
-
-        window.setTimeout(() => {
-            try { fx.remove(); } catch (e) { /* ignore */ }
-        }, 320);
-    }
-
-    // В debug-режиме показываем числа прямо на кружках, чтобы легче отлаживать "ленту"
-    applyDebugLabelToCircle(circleEl) {
-        if (!circleEl) return;
-        const ensureLabel = () => {
-            let lbl = circleEl.querySelector('.debug-label');
-            if (!lbl) {
-                lbl = document.createElement('span');
-                lbl.className = 'debug-label';
-                circleEl.appendChild(lbl);
-            }
-            return lbl;
-        };
-
-        if (this.debug) {
-            circleEl.classList.add('debug-number');
-            const v = circleEl.dataset?.value;
-            const lbl = ensureLabel();
-            lbl.textContent = (v == null ? '' : String(v));
-        } else {
-            circleEl.classList.remove('debug-number');
-            const lbl = circleEl.querySelector('.debug-label');
-            if (lbl) lbl.remove();
-        }
-    }
-
-    // Deterministic "random" food pick by value (stable across frames)
-    getFoodBaseForValue(value) {
-        const v = Math.max(0, Number(value) || 0);
-        const bases = this.foodBases || [];
-        if (bases.length === 0) return null;
-        // simple LCG-ish hash
-        const h = (Math.floor(v) * 9301 + 49297) % 233280;
-        const idx = h % bases.length;
-        return bases[idx];
-    }
-
-    getRandomFoodBase() {
-        const bases = this.foodBases || [];
-        if (bases.length === 0) return null;
-        const idx = Math.floor(Math.random() * bases.length);
-        return bases[idx] || bases[0];
-    }
-
-    getFoodSrc(base) {
-        if (!base) return '';
-        if (base === 'ice') return 'img/food/ice.svg';
-        if (base === 'hard-ice') return 'img/food/hard-ice.svg';
-        if (base === 'coin') return 'img/food/coin.svg';
-        return `img/food/${base}-s.svg`;
-    }
-
-    getFoodSrcCandidates(base) {
-        if (!base) return [];
-        if (base === 'ice') return ['img/food/ice.svg'];
-        if (base === 'hard-ice') return ['img/food/hard-ice.svg'];
-        if (base === 'coin') return ['img/food/coin.svg'];
-        return [
-            `img/food/${base}-s.svg`
-        ];
-    }
-
-    /** Загружает из img/food/{base}-s.svg маску и возвращает { viewBox, pathD }. Результат кэшируется. */
-    async fetchFoodColliderData(base) {
-        if (this._foodColliderCache[base]) return this._foodColliderCache[base];
-        if (this._foodColliderPromiseCache[base]) return this._foodColliderPromiseCache[base];
-
-        this._foodColliderPromiseCache[base] = (async () => {
-            try {
-                const url = this.getFoodSrc(base);
-                const res = await fetch(url);
-                if (!res.ok) throw new Error(`Failed to fetch collider source: ${res.status}`);
-                const text = await res.text();
-                const viewBoxMatch = text.match(/viewBox="([^"]+)"/);
-                // Новый протокол: используем только новый формат ассетов.
-                // 1) Если есть <path data-collider="true"> или id="collider" — берём его.
-                // 2) Иначе берём *последний* <path> в SVG как нижний слой-коллайдер.
-                const colliderAttr =
-                    text.match(/<path[^>]*\bdata-collider="true"[^>]*\bd="([^"]+)"/i)
-                    || text.match(/<path[^>]*\bid="collider"[^>]*\bd="([^"]+)"/i);
-                let lastRootPath = null;
-                const allRootPaths = [...text.matchAll(/<path\s[^>]*\bd="([^"]+)"[^>]*>/g)];
-                if (allRootPaths.length > 0) {
-                    lastRootPath = allRootPaths[allRootPaths.length - 1][1];
-                }
-                const viewBox = viewBoxMatch ? viewBoxMatch[1] : '0 0 200 200';
-                const pathD = (colliderAttr ? colliderAttr[1] : null) || lastRootPath;
-                const data = { viewBox, pathD };
-                this._foodColliderCache[base] = data;
-                return data;
-            } catch (e) {
-                const fallback = { viewBox: '0 0 200 200', pathD: null };
-                this._foodColliderCache[base] = fallback;
-                return fallback;
-            } finally {
-                delete this._foodColliderPromiseCache[base];
-            }
-        })();
-
-        return this._foodColliderPromiseCache[base];
-    }
-
-    /** Добавляет в круг коллайдер-SVG по маске из img/food/{base}-s.svg (асинхронно). */
-    ensureFoodCollider(circleEl, base) {
-        if (!circleEl || !base) return;
-        if (circleEl.querySelector('.food-collider')) return;
-        this.fetchFoodColliderData(base).then((data) => {
-            if (!data.pathD || !circleEl.isConnected) return;
-            const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-            svg.setAttribute('class', 'food-collider');
-            svg.setAttribute('viewBox', data.viewBox);
-            svg.setAttribute('aria-hidden', 'true');
-            svg.style.position = 'absolute';
-            // Коллайдер строго совпадает с контейнером еды.
-            svg.style.left = '0';
-            svg.style.top = '0';
-            svg.style.width = '100%';
-            svg.style.height = '100%';
-            svg.style.transform = 'none';
-            svg.style.pointerEvents = 'none';
-            svg.style.overflow = 'visible';
-            const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-            path.setAttribute('d', data.pathD);
-            path.setAttribute('fill', 'none');
-            svg.appendChild(path);
-            circleEl.appendChild(svg);
-        });
-    }
-
-    getItemTypeForValue(value) {
-        // Во время Coin Rush все объекты превращаются в монеты.
-        if (window.gameInstance?.isCoinRushActive?.()) return 'coin';
-        // В обычном режиме редкие монетки в потоке.
-        const v = Math.max(0, Number(value) || 0);
-        return (v % 7 === 0) ? 'coin' : 'food';
-    }
-
-    getItemSrc(itemType, base) {
-        if (itemType === 'coin') return 'img/food/coin.svg';
-        if (itemType === 'ice') return 'img/food/ice.svg';
-        return this.getFoodSrc(base);
-    }
-
-    setImageSrcIfChanged(img, src) {
-        if (!img || !src) return;
-        const current = img.getAttribute('src') || '';
-        if (current === src) return;
-        img.src = src;
-    }
-
-    getSizeScaleForCircle(circleEl) {
-        if (!circleEl) return 1;
-        const explicit = Number(circleEl.dataset?.sizeScale);
-        if (Number.isFinite(explicit) && explicit > 0) return explicit;
-        const cls = circleEl.dataset?.sizeClass || 'M';
-        // Стабильные размеры: одинаковые объекты всегда рендерятся в одном масштабе.
-        const byClass = { S: 1, M: 1, L: 1 };
-        return byClass[cls] || 1;
-    }
-
-    /** Текущая высота головы пингвина в пикселях (rig-слой головы внутри focus-zone). */
-    getPenguinHeadHeight() {
-        try {
-            const parts = this.getPenguinParts?.();
-            const headLayer = parts?.head || null;
-            const rect = headLayer?.getBoundingClientRect?.();
-            const h = rect?.height;
-            if (!Number.isFinite(h) || h <= 0) return null;
-            return h;
-        } catch (e) {
-            return null;
-        }
-    }
-
-    getStripBaseUnit() {
-        const scope = this.focusZone || document.documentElement;
-        const raw = parseFloat(getComputedStyle(scope).getPropertyValue('--circle-size'));
-        return Number.isFinite(raw) && raw > 0 ? raw : 63;
-    }
-
-    ensureFoodCircle(circleEl) {
-        if (!circleEl) return;
-        let img = circleEl.querySelector('img.food-img');
-        if (!img) {
-            img = document.createElement('img');
-            img.className = 'food-img';
-            img.alt = '';
-            img.draggable = false;
-            img.decoding = 'async';
-            img.loading = 'eager';
-            img.addEventListener('load', () => {
-                this.updateFoodContainerSize(circleEl, img);
-            });
-            img.addEventListener('error', () => {
-                const base = circleEl?.dataset?.foodBase || 'f2';
-                const candidates = this.getFoodSrcCandidates(base);
-                const idx = Math.max(0, Number(circleEl.dataset.foodSrcIdx || 0));
-                const nextIdx = idx + 1;
-                if (nextIdx < candidates.length) {
-                    circleEl.dataset.foodSrcIdx = String(nextIdx);
-                    this.setImageSrcIfChanged(img, candidates[nextIdx]);
-                    return;
-                }
-                // Фолбэк только на существующие food-ассеты в папке, без генерации SVG-шариков.
-                const nextBase = (this.foodBases || []).find((b) => b && b !== base) || 'f1';
-                const nextCandidates = this.getFoodSrcCandidates(nextBase);
-                if (nextCandidates.length > 0) {
-                    circleEl.dataset.foodBase = nextBase;
-                    circleEl.dataset.foodSrcIdx = '0';
-                    this.setImageSrcIfChanged(img, nextCandidates[0]);
-                }
-            });
-            circleEl.appendChild(img);
-        }
-
-        let marker = circleEl.querySelector('.item-marker');
-        if (!marker) {
-            marker = document.createElement('span');
-            marker.className = 'item-marker';
-            circleEl.appendChild(marker);
-        }
-
-        const kind = circleEl.dataset.itemKind || 'edible';
-        const baseByKind = {
-            edible: circleEl.dataset.foodBase || 'f2',
-            'big-edible': 'f1',
-            coin: 'coin',
-            ice: 'ice',
-            'reinforced-ice': 'hard-ice',
-            'hard-obstacle': 'hard-ice'
-        };
-        const base = baseByKind[kind] || circleEl.dataset.foodBase || 'f2';
-        const itemType = kind === 'coin' ? 'coin' : ((kind === 'ice' || kind === 'reinforced-ice' || kind === 'hard-obstacle') ? 'ice' : 'food');
-
-        circleEl.dataset.foodBase = base;
-        circleEl.dataset.itemType = itemType;
-        circleEl.dataset.foodSrcIdx = '0';
-        this.setImageSrcIfChanged(img, this.getFoodSrc(base));
-        this.setFoodPlaceholderSize(circleEl, img);
-
-        const isIceKind = kind === 'ice' || kind === 'reinforced-ice' || kind === 'hard-obstacle';
-        const isBigKind = kind === 'big-edible' || kind === 'reinforced-ice' || kind === 'hard-obstacle';
-        circleEl.classList.toggle('item-kind--ice', isIceKind);
-        circleEl.classList.toggle('item-kind--food', !isIceKind);
-        circleEl.classList.toggle('item-kind--big', isBigKind);
-        marker.classList.toggle('item-marker--square', isIceKind);
-        marker.classList.toggle('item-marker--circle', !isIceKind);
-
-        if (img.complete && img.naturalWidth > 0) {
-            this.updateFoodContainerSize(circleEl, img);
-        }
-    }
-
-    /** Задаёт размер img до загрузки, чтобы не было "прыжка" с исходных размеров SVG. */
-    setFoodPlaceholderSize(circleEl, img) {
-        if (!circleEl || !img) return;
-        const sizeScale = this.getSizeScaleForCircle(circleEl);
-        const baseUnit = this.getStripBaseUnit();
-        const placeholderH = baseUnit * 1.6 * sizeScale;
-        const placeholderW = placeholderH;
-
-        // Слот по ширине/высоте объекта (контейнер совпадает по кадру с пингвином).
-        circleEl.style.width = `${placeholderW}px`;
-        circleEl.style.height = `${placeholderH}px`;
-        img.style.width = `${placeholderW}px`;
-        img.style.height = `${placeholderH}px`;
-    }
-
-    // Обновление размера под реальные пропорции ассета (в "оригинальных" размерах, с единым масштабом)
-    updateFoodContainerSize(circleEl, img) {
-        if (!circleEl || !img) return;
-        
-        const naturalWidth = img.naturalWidth;
-        const naturalHeight = img.naturalHeight;
-        if (naturalWidth === 0 || naturalHeight === 0) return;
-
-        const sizeScale = this.getSizeScaleForCircle(circleEl);
-        const baseUnit = this.getStripBaseUnit();
-        const targetHeightBase = baseUnit * 1.6 * sizeScale;
-        const globalScale = targetHeightBase / Math.max(1, naturalHeight);
-
-        const targetWidth = naturalWidth * globalScale;
-        const targetHeight = naturalHeight * globalScale;
-
-        // Фиксируем размеры у изображения, а не у элемента слота,
-        // иначе ломается "питч" ленты (движение/рецикл завязаны на постоянный шаг).
-        img.style.width = `${targetWidth}px`;
-        img.style.height = `${targetHeight}px`;
-        // Контейнер ленты по кадру совпадает с объектом.
-        circleEl.style.width = `${targetWidth}px`;
-        circleEl.style.height = `${targetHeight}px`;
-
-        // Реальные размеры для физики/дебага
-        circleEl.dataset.actualWidth = String(targetWidth);
-        circleEl.dataset.actualHeight = String(targetHeight);
-    }
-
-    setupDebugOverlay() {
+    setupDebugResetButton() {
         if (!this.debug) return;
-        const container = document.getElementById('game-area');
-        if (!container) return;
-        // не дублируем, если уже есть
-        let overlay = container.querySelector('#debug-overlay');
-        if (!overlay) {
-            overlay = document.createElement('div');
-            overlay.id = 'debug-overlay';
-            container.appendChild(overlay);
-        }
-
-        const ensure = (id, className) => {
-            let el = overlay.querySelector(`#${id}`);
-            if (!el) {
-                el = document.createElement('div');
-                el.id = id;
-                el.className = className;
-                overlay.appendChild(el);
-            }
-            return el;
-        };
-
-        // SVG слой для повернутых полигонов (зубные коллайдеры)
-        let svg = overlay.querySelector('#debug-svg');
-        if (!svg) {
-            svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-            svg.setAttribute('id', 'debug-svg');
-            svg.style.position = 'absolute';
-            svg.style.inset = '0';
-            svg.style.pointerEvents = 'none';
-            svg.style.zIndex = '1000';
-            overlay.appendChild(svg);
-        }
-
-        const ensurePoly = (id, { fill, stroke } = {}) => {
-            let p = svg.querySelector(`#${id}`);
-            if (!p) {
-                p = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
-                p.setAttribute('id', id);
-                p.setAttribute('fill', fill || 'rgba(255,0,0,0.10)');
-                p.setAttribute('stroke', stroke || 'rgba(255,0,0,0.95)');
-                p.setAttribute('stroke-width', '2');
-                svg.appendChild(p);
-            }
-            return p;
-        };
-
-        // Контейнер для границ всех объектов на ленте
-        let objectsContainer = overlay.querySelector('#debug-objects-container');
-        if (!objectsContainer) {
-            objectsContainer = document.createElement('div');
-            objectsContainer.id = 'debug-objects-container';
-            objectsContainer.style.position = 'absolute';
-            objectsContainer.style.inset = '0';
-            objectsContainer.style.pointerEvents = 'none';
-            overlay.appendChild(objectsContainer);
-        }
-
-        const teethTopPolyEls = [];
-        const teethBotPolyEls = [];
-        for (let i = 0; i < 5; i += 1) {
-            teethTopPolyEls.push(ensurePoly(`debug-teeth-top-poly-${i + 1}`, { fill: 'rgba(255,0,0,0.10)', stroke: 'rgba(255,0,0,0.95)' }));
-            teethBotPolyEls.push(ensurePoly(`debug-teeth-bot-poly-${i + 1}`, { fill: 'rgba(255,165,0,0.10)', stroke: 'rgba(255,165,0,0.95)' }));
-        }
-
-        this.debugEls = {
-            overlay,
-            objectsContainer,
-            svg,
-            teethTopPolyEls,
-            teethBotPolyEls,
-            rightColliderPolyEl: ensurePoly('debug-right-collider-poly', { fill: 'rgba(0,120,255,0.10)', stroke: 'rgba(0,120,255,0.95)' }),
-            dangerPolyEl: ensurePoly('debug-danger-poly', { fill: 'rgba(0,150,255,0.08)', stroke: 'rgba(0,150,255,0.9)' }),
-            resolveSwallowZoneBox: ensure('debug-resolve-swallow-zone', 'debug-box debug-zone debug-zone--resolve-swallow'),
-            resolveBiteZoneBox: ensure('debug-resolve-bite-zone', 'debug-box debug-zone debug-zone--resolve-bite'),
-            warningZoneBox: ensure('debug-warning-zone', 'debug-box debug-zone debug-zone--warning'),
-            actionZoneBox: ensure('debug-action-zone', 'debug-box debug-zone debug-zone--action'),
-            autoBiteZoneBox: ensure('debug-auto-zone', 'debug-box debug-zone debug-zone--auto'),
-            jawTopBox: ensure('debug-jaw-top-box', 'debug-box debug-jaw-top'),
-            dangerBox: ensure('debug-danger-box', 'debug-box debug-danger'),
-            biteLine: ensure('debug-bite-line', 'debug-line debug-bite'),
-            jawBottomLine: ensure('debug-jaw-bottom-line', 'debug-line debug-jaw-bottom')
-        };
-    }
-
-    updateInteractionDebugZones(metrics, containerEl = this.focusZone) {
-        if (!this.debug || !this.debugEls || !metrics || !containerEl) return;
-        const gameArea = document.getElementById('game-area');
-        if (!gameArea) return;
-
-        const gameRect = gameArea.getBoundingClientRect();
-        const containerRect = containerEl.getBoundingClientRect();
-        const offsetLeft = containerRect.left - gameRect.left;
-        const offsetTop = containerRect.top - gameRect.top;
-        const top = offsetTop + (metrics.mouthCenterY - (metrics.mouthHeight * 0.9));
-        const height = metrics.mouthHeight * 1.8;
-
-        const placeZone = (el, leftX, rightX) => {
-            if (!el || !Number.isFinite(leftX) || !Number.isFinite(rightX)) return;
-            el.style.display = 'block';
-            el.style.left = `${offsetLeft + leftX}px`;
-            el.style.top = `${top}px`;
-            el.style.width = `${Math.max(2, rightX - leftX)}px`;
-            el.style.height = `${height}px`;
-        };
-
-        placeZone(this.debugEls.resolveSwallowZoneBox, metrics.resolveSwallowX - 3, metrics.resolveSwallowX + 3);
-        placeZone(this.debugEls.resolveBiteZoneBox, metrics.resolveBiteX - 3, metrics.resolveBiteX + 3);
-        placeZone(this.debugEls.warningZoneBox, metrics.warningLeftX, metrics.warningRightX);
-        placeZone(this.debugEls.actionZoneBox, metrics.actionLeftX, metrics.actionRightX);
-        placeZone(this.debugEls.autoBiteZoneBox, metrics.autoBiteLeftX, metrics.autoBiteRightX);
-    }
-
-    // Обновление границ объекта на ленте для debug (один объект: ближайший/в коллизии)
-    updateDebugObjectBoxes(trackedCircle, containerRect, isColliding = false, dangerPoly = null) {
-        if (!this.debug || !this.debugEls?.objectsContainer) return;
-        
-        const container = this.debugEls.objectsContainer;
-        container.innerHTML = '';
-        
-        if (!trackedCircle) return;
-        
-        const img = trackedCircle.querySelector('img.food-img');
-        const imgRect = img?.getBoundingClientRect?.() || null;
-        const rect = imgRect || trackedCircle.getBoundingClientRect();
-        const left = rect.left - containerRect.left;
-        const top = rect.top - containerRect.top;
-        const width = rect.width;
-        const height = rect.height;
-
-        if (Array.isArray(dangerPoly) && dangerPoly.length >= 3) {
-            const pts = dangerPoly.map((p) => `${p.x - containerRect.left},${p.y - containerRect.top}`).join(' ');
-            const poly = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
-            poly.setAttribute('points', pts);
-            poly.setAttribute('fill', isColliding ? 'rgba(255,0,0,0.12)' : 'rgba(0,150,255,0.06)');
-            poly.setAttribute('stroke', isColliding ? 'rgba(255,0,0,1)' : 'rgba(0,150,255,0.5)');
-            poly.setAttribute('stroke-width', isColliding ? '3' : '1.5');
-            const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-            svg.setAttribute('class', 'debug-box');
-            svg.style.position = 'absolute';
-            svg.style.left = '0';
-            svg.style.top = '0';
-            svg.style.width = '100%';
-            svg.style.height = '100%';
-            svg.style.pointerEvents = 'none';
-            svg.style.overflow = 'visible';
-            svg.appendChild(poly);
-            container.appendChild(svg);
-        } else {
-            const box = document.createElement('div');
-            box.className = 'debug-box';
-            box.style.position = 'absolute';
-            box.style.left = `${left}px`;
-            box.style.top = `${top}px`;
-            box.style.width = `${width}px`;
-            box.style.height = `${height}px`;
-            box.style.borderColor = isColliding ? 'rgba(255, 0, 0, 1)' : 'rgba(0, 150, 255, 0.35)';
-            box.style.background = isColliding ? 'rgba(255, 0, 0, 0.10)' : 'rgba(0, 150, 255, 0.04)';
-            box.style.borderWidth = isColliding ? '3px' : '1px';
-            box.style.borderStyle = 'solid';
-            box.style.boxSizing = 'border-box';
-            container.appendChild(box);
-        }
-    }
-
-    updateDebugOverlay({ containerRect, jawTopRect, jawBotRect, teethTopPoly, teethBotPoly, teethTopPolys, teethBotPolys, rightColliderPoly, dangerRect, dangerPoly, biteX }) {
-        if (!this.debug || !this.debugEls) return;
-        const { jawTopBox, dangerBox, dangerPolyEl, biteLine, jawBottomLine, svg, teethTopPolyEls, teethBotPolyEls, rightColliderPolyEl } = this.debugEls;
-
-        const placeBox = (box, rect) => {
-            if (!rect) {
-                box.style.display = 'none';
-                return;
-            }
-            box.style.display = 'block';
-            // Поддерживаем как DOMRect, так и объект с left/top/width/height
-            const left = rect.left !== undefined ? rect.left : (rect.x !== undefined ? rect.x : 0);
-            const top = rect.top !== undefined ? rect.top : (rect.y !== undefined ? rect.y : 0);
-            const width = rect.width !== undefined ? rect.width : ((rect.right !== undefined && rect.left !== undefined) ? (rect.right - rect.left) : 0);
-            const height = rect.height !== undefined ? rect.height : ((rect.bottom !== undefined && rect.top !== undefined) ? (rect.bottom - rect.top) : 0);
-            
-            box.style.left = `${left - containerRect.left}px`;
-            box.style.top = `${top - containerRect.top}px`;
-            box.style.width = `${width}px`;
-            box.style.height = `${height}px`;
-        };
-        
-        // Примечание: debug-боксы показывают AABB (boundingClientRect), т.к. это то,
-        // что реально используется в физике коллизий (и оно учитывает rotate/transform).
-
-        const placeLine = (line, x) => {
-            if (typeof x !== 'number' || !Number.isFinite(x)) {
-                line.style.display = 'none';
-                return;
-            }
-            line.style.display = 'block';
-            line.style.left = `${x}px`;
-            line.style.top = `0px`;
-            line.style.height = `${containerRect.height}px`;
-        };
-
-        const placeHLine = (line, y) => {
-            if (typeof y !== 'number' || !Number.isFinite(y)) {
-                line.style.display = 'none';
-                return;
-            }
-            line.style.display = 'block';
-            line.style.left = `0px`;
-            line.style.top = `${y}px`;
-            line.style.width = `${containerRect.width}px`;
-            line.style.height = `0px`;
-        };
-
-        // Скрываем боксы, которые не участвуют в коллизии
-        if (jawBottomLine) jawBottomLine.style.display = 'none';
-        
-        // 1) Верхняя челюсть
-        placeBox(jawTopBox, jawTopRect);
-        
-        // 2. Объект в коллизии: полигон из маски SVG или AABB
-        if (dangerPolyEl) {
-            if (Array.isArray(dangerPoly) && dangerPoly.length >= 3) {
-                const pts = dangerPoly.map((p) => `${p.x - containerRect.left},${p.y - containerRect.top}`).join(' ');
-                dangerPolyEl.setAttribute('points', pts);
-                dangerPolyEl.style.display = 'block';
-                if (dangerBox) dangerBox.style.display = 'none';
-            } else {
-                dangerPolyEl.setAttribute('points', '');
-                dangerPolyEl.style.display = 'none';
-                placeBox(dangerBox, dangerRect);
-            }
-        } else {
-            placeBox(dangerBox, dangerRect);
-        }
-        
-        // 3. Линия укуса (legacy) — скрываем, т.к. используем right-collider полигон.
-        placeLine(biteLine, biteX);
-        if (biteLine) biteLine.style.display = 'none';
-
-        // 4. Горизонтальная линия по нижней границе нижней челюсти
-        if (jawBotRect && jawBottomLine) {
-            const bottomY = (jawBotRect.bottom !== undefined ? jawBotRect.bottom : (jawBotRect.y || 0) + (jawBotRect.height || 0)) - containerRect.top;
-            placeHLine(jawBottomLine, bottomY);
-        }
-
-        // 5. Повернутые полигоны зубов
-        const setPoly = (polyEl, pts) => {
-            if (!polyEl) return;
-            if (!Array.isArray(pts) || pts.length < 3) {
-                polyEl.setAttribute('points', '');
-                polyEl.style.display = 'none';
-                return;
-            }
-            polyEl.style.display = 'block';
-            const pointsAttr = pts
-                .map(p => `${(p.x - containerRect.left).toFixed(2)},${(p.y - containerRect.top).toFixed(2)}`)
-                .join(' ');
-            polyEl.setAttribute('points', pointsAttr);
-        };
-
-        if (svg) {
-            svg.setAttribute('width', String(containerRect.width));
-            svg.setAttribute('height', String(containerRect.height));
-            svg.setAttribute('viewBox', `0 0 ${containerRect.width} ${containerRect.height}`);
-        }
-        const topPolys = Array.isArray(teethTopPolys)
-            ? teethTopPolys
-            : (teethTopPoly ? [teethTopPoly] : []);
-        const botPolys = Array.isArray(teethBotPolys)
-            ? teethBotPolys
-            : (teethBotPoly ? [teethBotPoly] : []);
-
-        if (Array.isArray(teethTopPolyEls)) {
-            teethTopPolyEls.forEach((el, idx) => {
-                const pts = topPolys[idx] || null;
-                setPoly(el, pts);
-            });
-        }
-        if (Array.isArray(teethBotPolyEls)) {
-            teethBotPolyEls.forEach((el, idx) => {
-                const pts = botPolys[idx] || null;
-                setPoly(el, pts);
-            });
-        }
-        setPoly(rightColliderPolyEl, rightColliderPoly);
-    }
-
-    getPenguinParts() {
-        return this.penguinRig.getPenguinParts();
-    }
-
-    // Полностью остановить любые анимации укуса (используется при смерти: нужно "заморозить" момент контакта).
-    stopAllBites() {
-        this.penguinRig.stopAllBites();
-    }
-
-    // Переключение изображений пингвина при проигрыше
-    setPenguinGameOverState() {
-        this.penguinRig.setPenguinGameOverState();
-    }
-
-    // Сброс изображений пингвина в нормальное состояние
-    resetPenguinState() {
-        this.penguinRig.resetPenguinState();
-    }
-
-    // Полный сброс DOM-окна ленты (нужно при старте новой игры, чтобы current=0 центрировался сразу)
-    resetStripWindow() {
-        if (!this.numberStrip) return;
-        this.stopStripAnimation();
-        this.stripConveyor.resetWindow();
-        this.collisionEngine.reset();
-        try {
-            this.penguinRig.stopAllBites();
-        } catch (e) {
-            // ignore
-        }
-        
-        // Переинициализация облаков
-        this.setupClouds();
-    }
-
-    setupFocusZone() {
-        const container = this.focusZone;
-        // Кэшируем позицию рта в "спокойном" состоянии.
-        // Даже если пингвин визуально двигается при укусе, лента должна ориентироваться на этот якорь.
-        this._cachedMouthRightX = container ? this.penguinRig.getPenguinMouthRightX(container) : 0;
-
-        // Вертикально выравниваем "ленту" по тому же кадру, что и голова пингвина:
-        // top/height number-strip-container = top/height слоя головы.
-        this.updateStripVerticalFrame();
-
-        // При ресайзе могут поменяться размеры кружков/маргины (responsive) — пересчитываем метрики
-        this.stripConveyor.recomputeStripMetrics();
-    }
-
-    /** Делает так, чтобы лента еды жила в том же вертикальном кадре, что и голова пингвина. */
-    updateStripVerticalFrame() {
-        try {
-            const focusZone = this.focusZone;
-            const stripContainer = document.getElementById('number-strip-container');
-            if (!focusZone || !stripContainer) return;
-
-            const focusRect = focusZone.getBoundingClientRect();
-            const parts = this.getPenguinParts();
-            const headLayer = parts?.head || null;
-            const headRect = headLayer?.getBoundingClientRect?.();
-            if (!headRect) return;
-
-            const padding = Math.max(6, headRect.height * 0.08);
-            const top = Math.max(0, (headRect.top - focusRect.top) - padding);
-            const height = headRect.height + (padding * 2);
-
-            stripContainer.style.top = `${top}px`;
-            stripContainer.style.bottom = 'auto';
-            stripContainer.style.height = `${height}px`;
-        } catch (e) {
-            // silent fallback: в худшем случае останется старое центрирование по высоте.
-        }
-    }
-
-    // X-координата "якоря" (куда нужно выравнивать текущий шаг ленты).
-    // По умолчанию это центр focus-zone; fallback — центр game-area.
-    getFocusAnchorX(containerEl) {
-        if (!containerEl) return 0;
-        try {
-            const containerRect = containerEl.getBoundingClientRect();
-
-            const mouthRightX = (this._cachedMouthRightX > 0) ? this._cachedMouthRightX : this.penguinRig.getPenguinMouthRightX(containerEl);
-            if (mouthRightX > 0) {
-                return mouthRightX + 18;
-            }
-
-            const focusRect = this.focusZone?.getBoundingClientRect();
-            if (focusRect) return (focusRect.left - containerRect.left) + (focusRect.width / 2);
-        } catch (e) {
-            // noop: fallback below
-        }
-        return containerEl.offsetWidth / 2;
+        const hudActions = document.getElementById('hud-actions');
+        if (!hudActions) return;
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'icon-btn';
+        btn.textContent = 'RST';
+        btn.title = 'Reset local & GamePush progress (debug)';
+        btn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            window.gameInstance?.debugResetProgress?.();
+        });
+        hudActions.appendChild(btn);
     }
 
     setupEventListeners() {
-        // Обновление при изменении размера окна
-        window.addEventListener('resize', () => {
-            this.setupFocusZone();
-        });
-
-        // Ускоряем ленту за каждую съеденную еду
         eventBus.on('FOOD_EATEN', () => {
-            this.stripConveyor.onFoodEaten();
+            this.stripConveyor?.onFoodEaten?.();
         });
-        
-        // Остановка анимаций при паузе
         eventBus.on('PAUSE', () => {
             this.stopCircleAnimation();
             this.stopStripAnimation();
         });
+        window.addEventListener('resize', () => {
+            this.stage?.resize?.();
+        });
     }
 
-    // Основной апдейт ленты и коллизий.
+    getPenguinParts() {
+        return this.penguinRig?.getPenguinParts?.() || null;
+    }
+
+    stopAllBites() {
+        this.penguinRig?.stopAllBites?.();
+    }
+
+    setPenguinGameOverState() {
+        this.penguinRig?.setPenguinGameOverState?.();
+    }
+
+    resetPenguinState() {
+        this.penguinRig?.resetPenguinState?.();
+    }
+
+    resetStripWindow() {
+        this.stopStripAnimation();
+        this.stripConveyor?.resetWindow?.();
+        this.collisionEngine?.reset?.();
+        this.penguinRig?.stopAllBites?.();
+    }
+
     updateConveyor(timer) {
-        this.stripConveyor.update(timer);
+        this.stripConveyor?.update?.(timer);
+        this.stage?.update?.();
     }
 
-    // Проверка коллизий с зубами и проглатывания.
-    checkCollisionsAndAutoBite(container) {
+    checkCollisionsAndAutoBite() {
+        this.collisionEngine?.check?.();
         if (this.debug) {
-            const metrics = this.penguinRig.getInteractionMetrics(container || this.focusZone);
-            if (metrics) this.updateInteractionDebugZones(metrics, container || this.focusZone);
+            this.stage?.updateDebug?.(
+                this.collisionEngine?.lastMetrics || null,
+                this.stripConveyor?.getActiveItems?.() || [],
+                window.gameInstance?.getInteractionState?.() || null
+            );
         }
-        this.collisionEngine.check(container);
     }
 
     setMode(mode) {
-        this.penguinRig.setMode(mode);
+        this.penguinRig?.setMode?.(mode);
     }
 
     performAction() {
-        this.penguinRig.triggerAction(this.penguinRig.getMode() === 'bite' ? 'action-bite' : 'action-swallow');
-        return this.collisionEngine.handleAction(this.focusZone);
+        this.penguinRig?.triggerAction?.(this.penguinRig?.getMode?.() === 'bite' ? 'action-bite' : 'action-swallow');
+        return this.collisionEngine?.handleAction?.();
     }
 
     setHealth(hp, maxHp) {
-        this.penguinRig.setHealth(hp, maxHp);
+        this.penguinRig?.setHealth?.(hp, maxHp);
     }
 
     setStunned(durationMs) {
-        if (durationMs > 0) this.penguinRig.setStunned(durationMs);
-        else this.penguinRig.clearStun();
+        if (durationMs > 0) this.penguinRig?.setStunned?.(durationMs);
+        else this.penguinRig?.clearStun?.();
     }
 
     startBiteHold() {
@@ -947,129 +143,65 @@ class Renderer {
         this.setMode('bite');
     }
 
-    // Анимация "+1" / "+2" при засчитанном укусе монетки
     showFloatingCoinBonus(x, y, amount) {
-        const container = document.getElementById('game-area');
-        if (!container) return;
-        const num = Math.max(1, Math.min(99, Math.floor(amount || 1)));
-        const text = `+${num}`;
-        const el = document.createElement('div');
-        el.className = 'floating-coin-bonus';
-        el.textContent = text;
-        el.setAttribute('aria-hidden', 'true');
-        if (typeof x === 'number' && typeof y === 'number') {
-            const gameRect = container.getBoundingClientRect();
-            const focusRect = this.focusZone?.getBoundingClientRect?.();
-            const offsetX = focusRect ? (focusRect.left - gameRect.left) : 0;
-            const offsetY = focusRect ? (focusRect.top - gameRect.top) : 0;
-            el.style.left = `${x + offsetX}px`;
-            el.style.top = `${y + offsetY}px`;
-        } else {
-            const rect = container.getBoundingClientRect();
-            el.style.left = `${rect.width / 2}px`;
-            el.style.top = `${rect.height / 2}px`;
-        }
-        container.appendChild(el);
-        window.setTimeout(() => {
-            try { el.remove(); } catch (e) { /* ignore */ }
-        }, 850);
+        this.stage?.showFloatingCoinBonus?.(x, y, amount);
     }
 
     showEatRipple(x, y, kind = 'food') {
-        const container = document.getElementById('game-area');
-        if (!container) return;
-        const el = document.createElement('div');
-        const isIce = kind === 'ice' || kind === 'reinforced-ice' || kind === 'hard-obstacle';
-        el.className = `eat-ripple${isIce ? ' eat-ripple--ice' : ''}`;
-        if (typeof x === 'number' && typeof y === 'number') {
-            const gameRect = container.getBoundingClientRect();
-            const focusRect = this.focusZone?.getBoundingClientRect?.();
-            const offsetX = focusRect ? (focusRect.left - gameRect.left) : 0;
-            const offsetY = focusRect ? (focusRect.top - gameRect.top) : 0;
-            el.style.left = `${x + offsetX}px`;
-            el.style.top = `${y + offsetY}px`;
-        } else {
-            const rect = container.getBoundingClientRect();
-            el.style.left = `${rect.width * 0.34}px`;
-            el.style.top = `${rect.height * 0.54}px`;
-        }
-        container.appendChild(el);
-        window.setTimeout(() => {
-            try { el.remove(); } catch (e) { /* ignore */ }
-        }, 420);
+        this.stage?.showEatRipple?.(x, y, kind);
     }
 
-    // ========== АНИМАЦИЯ КРУГА (независимая) ==========
-    
-    // Остановка анимации круга
+    triggerPixiActionSuccessFx() {
+        this.stage?.triggerActionSuccessFx?.();
+    }
+
     stopCircleAnimation() {
         if (this.circleAnimationId) {
             cancelAnimationFrame(this.circleAnimationId);
             this.circleAnimationId = null;
         }
-        const indicator = this.focusZone?.querySelector('#penguin-head') || this.focusZone?.querySelector('.focus-penguin');
-        if (indicator) {
-            indicator.style.transform = 'scale(1)';
-        }
     }
-    
-    // Остановка анимации ленты
+
     stopStripAnimation() {
         if (this.stripAnimationId) {
             cancelAnimationFrame(this.stripAnimationId);
             this.stripAnimationId = null;
         }
     }
-    
-    // Пауза обновления ленты (сохраняем текущее время, чтобы не "догонять" при возобновлении)
+
     pauseBeltUpdate() {
-        this.stripConveyor.pause();
+        this.stripConveyor?.pause?.();
     }
 
-    /** Заморозка челюсти в текущей позе (геймовер по льду на 5-м зубе). */
     freezeMouthInPlace() {
         this.penguinRig?.freezeMouthInPlace?.();
     }
 
-    /** Обновляет маску ленты: дырка по left-collider, чтобы еда обрезалась при входе в рот. */
-    updateStripMask(pathD) {
-        const hole = document.getElementById('strip-mask-hole');
-        if (hole && pathD) hole.setAttribute('d', pathD);
-    }
-    
-    // Возобновление обновления ленты (корректируем время на длительность паузы)
     resumeBeltUpdate(pauseDurationMs) {
-        this.stripConveyor.resume(pauseDurationMs);
+        this.stripConveyor?.resume?.(pauseDurationMs);
     }
-    
 
-    // Рендер ленты чисел
-    renderNumberStrip(timer) {
-        this.stripConveyor.renderNumberStrip(timer);
+    renderNumberStrip() {
+        this.stripConveyor?.renderNumberStrip?.();
     }
 
     refreshVisibleItemTypes() {
-        const circles = this.numberStrip?.querySelectorAll?.('.number-circle');
-        if (!circles || circles.length === 0) return;
-        circles.forEach((circle) => this.ensureFoodCircle(circle));
-    }
-    
-    // Обновление UI
-    updateUI(state) {
-        this.ui.updateUI(state);
+        this.stripConveyor?.refreshVisibleItemTypes?.();
     }
 
-    // Показ экрана паузы
+    updateUI(state) {
+        this.ui.updateUI(state);
+        this.stage?.setGameState?.(state);
+    }
+
     showPauseScreen() {
         this.ui.showPauseScreen();
     }
 
-    // Скрытие экрана паузы
     hidePauseScreen() {
         this.ui.hidePauseScreen();
     }
 
-    // ===== Leaderboard modal =====
     isLeaderboardModalOpen() {
         return this.ui.isLeaderboardModalOpen();
     }
@@ -1086,34 +218,32 @@ class Renderer {
         this.ui.renderLeaderboardModal(data);
     }
 
-    // Показ экрана Game Over
     showGameOverScreen(score, bestScore = 0, coins = 0) {
         this.ui.showGameOverScreen(score, bestScore, coins);
     }
 
-    // Скрытие экрана Game Over
     hideGameOverScreen() {
         this.ui.hideGameOverScreen();
     }
 
-    // Показ обратного отсчета
     async showCountdown() {
         await this.ui.showCountdown();
     }
 
-    // Показ стартового экрана
     showStartScreen(state) {
         this.ui.showStartScreen();
         if (state) this.ui.updateStartGameScreen(state);
     }
 
-    // Скрытие стартового экрана
     hideStartScreen() {
         this.ui.hideStartScreen();
     }
 
-    // Настройка облаков на фоне
     setupClouds() {
-        this.cloudsBackground.setupClouds();
+        this.stage?._createClouds?.();
+    }
+
+    isPixiControlHit(clientX, clientY) {
+        return !!this.stage?.containsControlPoint?.(clientX, clientY);
     }
 }

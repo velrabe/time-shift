@@ -125,7 +125,10 @@ class CollisionEngine {
 
     clearWarningFlags() {
         const items = this.getSortedItems();
-        items.forEach((item) => item?.el?.classList?.remove?.('is-warning'));
+        items.forEach((item) => {
+            item?.setWarning?.(false);
+            item?.el?.classList?.remove?.('is-warning');
+        });
     }
 
     updateWarningZone(state, metrics) {
@@ -139,6 +142,7 @@ class CollisionEngine {
 
         items.forEach((item) => {
             const inWarning = this.itemOverlapsXRange(item, warningLeftX, warningRightX);
+            item?.setWarning?.(inWarning);
             item?.el?.classList?.toggle?.('is-warning', inWarning);
         });
     }

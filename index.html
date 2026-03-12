@@ -75,122 +75,7 @@
 
         <!-- Game Area -->
         <div id="game-area">
-            <!-- Маска для ленты: еда обрезается по left-collider (дырка в маске) -->
-            <svg aria-hidden="true" style="position:absolute;width:0;height:0;">
-                <defs>
-                    <mask id="strip-mask" maskContentUnits="objectBoundingBox">
-                        <rect x="0" y="0" width="1" height="1" fill="white"/>
-                        <path id="strip-mask-hole" fill="black" d="M0,0 L0,0 L0,0 L0,0 Z"/>
-                    </mask>
-                </defs>
-            </svg>
-            <!-- Background elements -->
-            <div id="background-layer" aria-hidden="true">
-                <img id="hills" src="img/hills.svg" alt="">
-                <div id="clouds-container"></div>
-            </div>
-            <!-- Ice (visual lane) -->
-            <div id="ice-layer" aria-hidden="true">
-                <img id="ice-top" src="img/ice-top.svg" alt="">
-                <img id="ice-bot" src="img/ice-bot.svg" alt="">
-            </div>
-            <div id="focus-zone">
-                <!-- Слой 1: задняя часть пингвина (голова, глаз, коллайдеры, задние челюсти) -->
-                <div id="penguin-back" class="penguin-back" aria-hidden="true">
-                    <div id="penguin-root" class="focus-penguin penguin" aria-label="Penguin">
-                        <div id="penguin-head-layer" class="penguin-layer penguin-layer--head" aria-hidden="true">
-                            <img id="penguin-head" class="penguin-part" src="img/head/head-1.svg" alt="">
-                        </div>
-                        <div id="penguin-eye-layer" class="penguin-layer penguin-layer--eye" aria-hidden="true">
-                            <img id="penguin-eye" class="penguin-part" src="img/head/eye-1.svg" alt="">
-                        </div>
-                        <div id="penguin-left-collider-layer" class="penguin-layer penguin-layer--left-collider" aria-hidden="true">
-                            <svg class="penguin-collider" viewBox="0 0 546 200" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                                <path id="penguin-left-collider-path" d="M314.909 164.971L314.711 67.5791H313.338L313.81 167.254L314.909 164.971Z" fill="none" stroke="none"/>
-                            </svg>
-                        </div>
-                        <div id="penguin-right-collider-layer" class="penguin-layer penguin-layer--right-collider" aria-hidden="true">
-                            <svg class="penguin-collider" viewBox="0 0 546 200" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                                <path id="penguin-right-collider-path" d="M506.904 164.715L505.566 67.5791H490.524L493.759 168.755L506.904 164.715Z" fill="none" stroke="none"/>
-                            </svg>
-                        </div>
-                        <div id="penguin-top-jaw-back" class="penguin-layer penguin-layer--top-jaw-back" aria-hidden="true">
-                            <img class="penguin-part" src="img/head/top-jaw-1-back.svg" alt="">
-                        </div>
-                        <div id="penguin-bot-jaw-back" class="penguin-layer penguin-layer--bot-jaw-back" aria-hidden="true">
-                            <img class="penguin-part" src="img/head/bot-jaw-1-back.svg" alt="">
-                        </div>
-                    </div>
-                </div>
-                <!-- Слой 2: лента с едой/льдом (между jaw-back и jaw-front) -->
-                <div id="number-strip-container">
-                    <div id="number-strip"></div>
-                </div>
-                <!-- Слой 3: передние челюсти -->
-                <div id="penguin-front" class="penguin-front" aria-hidden="true">
-                    <div id="penguin-jaws-root" class="focus-penguin penguin penguin--jaws-only" aria-label="Penguin jaws">
-                    <!-- 6. top-jaw-1-front -->
-                    <div id="penguin-top-jaw" class="penguin-layer penguin-layer--top-jaw" aria-hidden="true">
-                        <div class="penguin-tooth-group penguin-tooth-group--top">
-                            <img class="penguin-part penguin-tooth" src="img/head/tooth-top-1.svg" alt="">
-                            <svg class="penguin-tooth-col" viewBox="0 0 546 200" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M495.205 119.123C499.567 119.3 503.446 117.348 504.838 112.687C504.836 112.687 485.214 107.211 485.211 107.21C486.987 118.86 490.842 118.946 495.205 119.123Z" fill="none" stroke="none"/></svg>
-                            <img class="penguin-part penguin-tooth" src="img/head/tooth-top-2.svg" alt="">
-                            <svg class="penguin-tooth-col" viewBox="0 0 546 200" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M481.193 120.323C474.954 122.531 454.891 127.477 450.797 119.929L481.193 120.323Z" fill="none" stroke="none"/></svg>
-                            <img class="penguin-part penguin-tooth" src="img/head/tooth-top-3.svg" alt="">
-                            <svg class="penguin-tooth-col" viewBox="0 0 546 200" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M417.61 127.079C408.622 126.562 402.591 128.847 399.908 123.355L443.719 124.404C440.79 128.536 427.614 127.655 417.61 127.079Z" fill="none" stroke="none"/></svg>
-                            <img class="penguin-part penguin-tooth" src="img/head/tooth-top-4.svg" alt="">
-                            <svg class="penguin-tooth-col" viewBox="0 0 546 200" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M363.675 128.346C357.038 127.878 355.051 128.062 352.71 123.455L397.067 118.366C396.633 125.109 393.388 126.129 387.343 126.718C381.298 127.307 369.214 128.736 363.675 128.346Z" fill="none" stroke="none"/></svg>
-                            <img class="penguin-part penguin-tooth" src="img/head/tooth-top-5.svg" alt="">
-                            <svg class="penguin-tooth-col" viewBox="0 0 546 200" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M350.094 119.49C350.094 126.238 347.763 126.848 343.894 126.848C337.042 126.848 322.162 130.833 319.371 124.304L350.094 119.49Z" fill="none" stroke="none"/></svg>
-                        </div>
-                        <img class="penguin-part penguin-jaw-base" src="img/head/top-jaw-1-front.svg" alt="">
-                    </div>
-                    <!-- 7. bot-jaw-1-front -->
-                    <div id="penguin-bot-jaw" class="penguin-layer penguin-layer--bot-jaw" aria-hidden="true">
-                        <div class="penguin-tooth-group penguin-tooth-group--bot">
-                            <img class="penguin-part penguin-tooth" src="img/head/tooth-bot-1.svg" alt="">
-                            <svg class="penguin-tooth-col" viewBox="0 0 546 200" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M491.962 121.149C495.829 119.187 502.329 120.629 503.796 125.607L485.717 135.632C486.955 123.029 488.301 123.007 491.962 121.149Z" fill="none" stroke="none"/></svg>
-                            <img class="penguin-part penguin-tooth" src="img/head/tooth-bot-2.svg" alt="">
-                            <svg class="penguin-tooth-col" viewBox="0 0 546 200" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M480.707 123.367C476.37 123.367 459.109 124.336 455.629 132.333L480.707 123.367Z" fill="none" stroke="none"/></svg>
-                            <img class="penguin-part penguin-tooth" src="img/head/tooth-bot-3.svg" alt="">
-                            <svg class="penguin-tooth-col" viewBox="0 0 546 200" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M424.325 128.048C415.495 128.048 406.812 127.198 403.875 132.621L449.743 132.293C447.107 127.923 434.154 128.048 424.325 128.048Z" fill="none" stroke="none"/></svg>
-                            <img class="penguin-part penguin-tooth" src="img/head/tooth-bot-4.svg" alt="">
-                            <svg class="penguin-tooth-col" viewBox="0 0 546 200" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M388.396 128.603C394.902 129.35 397.202 130.119 399.297 134.804L355.136 136.505C355.866 129.811 359.103 128.933 365.075 128.603C371.046 128.273 382.967 127.98 388.396 128.603Z" fill="none" stroke="none"/></svg>
-                            <img class="penguin-part penguin-tooth" src="img/head/tooth-bot-5.svg" alt="">
-                            <svg class="penguin-tooth-col" viewBox="0 0 546 200" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M325.686 128.983L325.759 128.983C332.504 128.983 346.782 127.311 350.486 133.336L317.33 135.663C317.33 128.983 321.891 128.983 325.686 128.983Z" fill="none" stroke="none"/></svg>
-                        </div>
-                        <img class="penguin-part penguin-jaw-base" src="img/head/bot-jaw-1-front.svg" alt="">
-                    </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Control Buttons -->
-        <div id="controls">
-            <div id="control-buttons">
-                <div class="action-btn-wrap action-btn--switch">
-                    <button
-                        id="mode-switch-btn"
-                        class="action-round-btn action-round-btn--switch is-active"
-                        type="button"
-                        aria-label="Toggle swallow and bite mode"
-                        title="Toggle mode"
-                    >
-                        <img src="img/ui/slow.svg" alt="" aria-hidden="true">
-                    </button>
-                </div>
-                <div class="action-btn-wrap action-btn--action">
-                    <button
-                        id="action-btn"
-                        class="action-round-btn action-round-btn--action"
-                        type="button"
-                        aria-label="Action"
-                    >
-                        <img src="img/ui/slow.svg" alt="" aria-hidden="true">
-                    </button>
-                </div>
-            </div>
+            <div id="pixi-stage" aria-hidden="true"></div>
         </div>
 
         <!-- Pause Screen -->
@@ -427,6 +312,7 @@
     <noscript><div><img src="https://mc.yandex.ru/watch/106150752" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
     <!-- /Yandex.Metrika counter -->
     
+    <script src="vendor/pixi.min.js"></script>
     <script src="js/eventBus.js"></script>
     <script src="js/timer.js"></script>
     <script src="js/perks.js"></script>
@@ -434,12 +320,14 @@
     <script src="js/storage.js"></script>
     <script src="js/gamepush.js"></script>
     <script src="js/playerName.js"></script>
-    <script src="js/stripConveyor.js"></script>
     <script src="js/collisionEngine.js"></script>
     <script src="js/i18n.js"></script>
     <script src="js/rendererUI.js"></script>
-    <script src="js/penguinRig.js"></script>
-    <script src="js/cloudsBackground.js"></script>
+    <script src="js/pixiEffects.js"></script>
+    <script src="js/pixiControls.js"></script>
+    <script src="js/pixiPenguinRig.js"></script>
+    <script src="js/pixiConveyor.js"></script>
+    <script src="js/pixiStage.js"></script>
     <script src="js/renderer.js"></script>
     <script src="js/game.js"></script>
     <script src="js/main.js"></script>

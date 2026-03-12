@@ -375,6 +375,10 @@ class Game {
                 if (e.target?.closest?.('button, [role="button"]')) return;
                 const touch = e.changedTouches?.[0];
                 if (!touch) return;
+                if (this.renderer?.isPixiControlHit?.(touch.clientX, touch.clientY)) {
+                    touchStart = null;
+                    return;
+                }
                 touchStart = { x: touch.clientX, y: touch.clientY, at: Date.now() };
             }, { passive: true });
 
@@ -386,6 +390,10 @@ class Game {
                 }
                 const touch = e.changedTouches?.[0];
                 if (!touch) {
+                    touchStart = null;
+                    return;
+                }
+                if (this.renderer?.isPixiControlHit?.(touch.clientX, touch.clientY)) {
                     touchStart = null;
                     return;
                 }

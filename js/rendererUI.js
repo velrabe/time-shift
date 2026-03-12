@@ -410,7 +410,10 @@ class RendererUI {
 
     triggerActionSuccessFx() {
         const actionBtn = document.getElementById('action-btn');
-        if (!actionBtn) return;
+        if (!actionBtn) {
+            window.gameInstance?.renderer?.triggerPixiActionSuccessFx?.();
+            return;
+        }
         actionBtn.classList.add('is-success');
         if (this._actionSuccessTimeoutId) {
             window.clearTimeout(this._actionSuccessTimeoutId);
